@@ -1,0 +1,76 @@
+name: alloy
+
+type: charm
+
+title: Grafana Alloy VM
+
+platforms:
+  ubuntu@24.04:amd64:
+
+summary: Machine charm for Grafana Alloy on Ubuntu.
+
+description: |
+  Grafana Alloy is a vendor-neutral distribution of the OpenTelemetry Collector.
+
+  This machine charm installs and manages Alloy on Ubuntu VMs and will expose
+  integrations for sending logs to Loki and receiving syslog inputs.
+
+config:
+  options:
+    log-level:
+      description: |
+        Configures the log level of the Alloy process.
+
+        Acceptable values are: "info", "debug", "warning", "error" and "critical"
+      default: "info"
+      type: string
+    config-override:
+      description: |
+        Full Alloy configuration file as a string. When set, this overrides the
+        generated configuration entirely. Set to empty to revert to generated config.
+      type: string
+      default: ""
+    systemd-units:
+      description: |
+        Comma-separated list of systemd unit names to forward to Loki
+        (e.g. "ssh.service, snapd.service"). Leave empty to disable.
+      type: string
+      default: ""
+    custom_args:
+      description: |
+        Custom arguments for the Alloy service.
+      default: "--server.http.listen-addr=0.0.0.0:6987"
+      type: string
+    alloy-livedebugging:
+      description: |
+        Enable live debugging mode for Alloy. When enabled, the charm sets
+        CUSTOM_ARGS to listen on 0.0.0.0:12345 and injects a livedebugging
+        block into generated Alloy config. Disabling restores previous args.
+      default: false
+      type: boolean
+    enable-syslogreceivers:
+      description: |
+        Enable Alloy syslog listeners for remote syslog ingestion. When true,
+        Alloy listens on both TCP and UDP port 1514 and forwards incoming logs
+        directly to Loki (without Juju topology relabeling).
+      default: false
+      type: boolean
+
+parts:
+  charm:
+    plugin: uv
+    source: .
+    build-snaps:
+      - astral-uv
+
+requires:
+  send-loki-logs:
+    interface: loki_push_api
+    optional: true
+    description: Send logs to a Loki provider.
+
+provides:
+  syslog-receiver:
+    interface: syslog
+    optional: true
+    description: Receive syslog messages from other units.
