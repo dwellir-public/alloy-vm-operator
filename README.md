@@ -1,5 +1,59 @@
 # alloy
 
+## Metrics scraping to Mimir
+
+Alloy now supports:
+
+- local self metrics and `prometheus.exporter.unix` host metrics
+- relation-driven scrape targets over `metrics-endpoint` (`prometheus_scrape`)
+- forwarding metrics upstream over `send-remote-write` (`prometheus_remote_write`)
+
+The intended release-1 operating model is one Alloy unit doing the scraping and forwarding work.
+
+### No-upstream behavior
+
+If Alloy has related scrape targets but no `send-remote-write` relation:
+
+- relation-derived remote scrape jobs are not enabled
+- no `prometheus.remote_write` component is rendered
+- local self metrics are dropped rather than buffered
+- the unit goes to:
+  - `waiting: Waiting for remote write before enabling related metrics scraping`
+
+This is deliberate. The charm avoids accumulating local storage pressure when there is nowhere valid to send scraped metrics.
+
+### Remote write outage buffering
+
+When a valid remote write endpoint exists, Alloy renders a bounded WAL buffer on the
+`prometheus.remote_write` component:
+
+- `max_keepalive_time = "30m"`
+
+This means:
+
+- short upstream outages are buffered
+- longer outages can still lose older samples once the `30m` keepalive window is exceeded
+
+### Example relation to Mimir
+
+Relate Alloy to a deployed `mimir-vm` application:
+
+```bash
+juju relate alloy:send-remote-write mimir-vm:receive-remote-write
+```
+
+Verify the rendered remote write config on the Alloy unit:
+
+```bash
+juju ssh alloy/<unit> 'grep -n "prometheus.remote_write \\\"metrics\\\"" -A8 /etc/alloy/config.alloy'
+```
+
+Verify a local unix-exporter metric in Mimir:
+
+```bash
+juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/query?query=node_uname_info{juju_application=\"alloy\"}'"
+```
+
 ## Reconfigure Alloy with full override
 
 Dump the current override value:

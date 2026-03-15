@@ -3,7 +3,12 @@
 # See LICENSE file for licensing details.
 """Config builder for Alloy VM charm."""
 
+from __future__ import annotations
+
+import json
 import os
+import re
+from dataclasses import dataclass, field
 
 DEFAULT_CONFIG_DIR = "/etc/alloy"
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.alloy")
@@ -11,30 +16,28 @@ DEFAULT_PACKAGE_CONFIG_BACKUP_PATH = os.path.join(
     DEFAULT_CONFIG_DIR, "config.alloy.package-default"
 )
 DEFAULT_CONFIG_BACKUP_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.alloy.bak")
+REMOTE_WRITE_COMPONENT_NAME = "metrics"
+REMOTE_WRITE_MAX_KEEPALIVE = "30m"
 
-DEFAULT_CONFIG_CONTENT = """
-logging {
-  level = "warn"
-}
 
-prometheus.exporter.unix "default" {
-  include_exporter_metrics = true
-  disable_collectors       = ["mdadm"]
-}
+@dataclass(frozen=True)
+class ScrapeTarget:
+    """One rendered Alloy scrape target."""
 
-prometheus.scrape "default" {
-  targets = array.concat(
-    prometheus.exporter.unix.default.targets,
-    [{
-      // Self-collect metrics
-      job         = "alloy",
-      __address__ = "127.0.0.1:6987",
-    }],
-  )
+    address: str
+    labels: dict[str, str] = field(default_factory=dict)
 
-  forward_to = []
-}
-""".lstrip()
+
+@dataclass(frozen=True)
+class MetricsScrapeJob:
+    """A translated subset of a Prometheus scrape job."""
+
+    job_name: str
+    targets: list[ScrapeTarget]
+    metrics_path: str = "/metrics"
+    scheme: str = "http"
+    scrape_interval: str = ""
+    scrape_timeout: str = ""
 
 
 class ConfigBuilder:
@@ -44,6 +47,8 @@ class ConfigBuilder:
         self,
         *,
         loki_endpoints: list[str],
+        remote_write_endpoints: list[str],
+        metrics_scrape_jobs: list[MetricsScrapeJob],
         systemd_units: list[str],
         live_debugging: bool = False,
         enable_syslog_receivers: bool = False,
@@ -52,6 +57,8 @@ class ConfigBuilder:
         topology_labels: dict[str, str],
     ):
         self._loki_endpoints = loki_endpoints
+        self._remote_write_endpoints = remote_write_endpoints
+        self._metrics_scrape_jobs = metrics_scrape_jobs
         self._systemd_units = systemd_units
         self._live_debugging = live_debugging
         self._enable_syslog_receivers = enable_syslog_receivers
@@ -61,18 +68,28 @@ class ConfigBuilder:
 
     def build(self) -> str:
         """Return the Alloy configuration text."""
-        base = DEFAULT_CONFIG_CONTENT.rstrip()
-        if (
-            not self._systemd_units
-            and not self._live_debugging
-            and not self._enable_syslog_receivers
-        ):
-            return f"{base}\n"
+        blocks: list[str] = [
+            self._render_logging(),
+            "",
+            self._render_unix_exporter(),
+            "",
+            self._render_local_metrics_relabel(),
+            "",
+        ]
 
-        blocks: list[str] = [base, ""]
+        if self._remote_write_endpoints:
+            blocks.extend([self._render_remote_write(), ""])
+
+        blocks.append(self._render_local_metrics_scrape())
+
+        if self._remote_write_endpoints and self._metrics_scrape_jobs:
+            blocks.extend(["", "// METRICS -> REMOTE WRITE", ""])
+            for scrape_job in self._metrics_scrape_jobs:
+                blocks.extend([self._render_metrics_scrape(scrape_job), ""])
+
         if self._live_debugging:
-            blocks.append(self._render_live_debugging())
-            blocks.append("")
+            blocks.extend([self._render_live_debugging(), ""])
+
         if self._systemd_units or self._enable_syslog_receivers:
             blocks.extend(["// LOGS -> LOKI (Juju topology labels)", ""])
         if self._systemd_units:
@@ -86,8 +103,136 @@ class ConfigBuilder:
                     "",
                 ]
             )
-        blocks.extend([self._render_juju_processor(), self._render_loki_writer()])
+        if self._systemd_units or self._enable_syslog_receivers:
+            blocks.extend([self._render_juju_processor(), self._render_loki_writer()])
+
         return "\n".join(blocks).rstrip() + "\n"
+
+    def _render_logging(self) -> str:
+        return "\n".join(
+            [
+                "logging {",
+                '  level = "warn"',
+                "}",
+            ]
+        )
+
+    def _render_unix_exporter(self) -> str:
+        return "\n".join(
+            [
+                'prometheus.exporter.unix "default" {',
+                "  include_exporter_metrics = true",
+                '  disable_collectors       = ["mdadm"]',
+                "}",
+            ]
+        )
+
+    def _render_local_metrics_relabel(self) -> str:
+        rules = []
+        for key in self._topology_label_order():
+            value = self._topology_labels.get(key)
+            if value:
+                rules.extend(
+                    [
+                        "  rule {",
+                        f'    target_label = "{key}"',
+                        f'    replacement  = {json.dumps(value)}',
+                        "  }",
+                        "",
+                    ]
+                )
+        if rules:
+            rules.pop()
+        return "\n".join(
+            [
+                'discovery.relabel "local_metrics" {',
+                "  targets = array.concat(",
+                "    prometheus.exporter.unix.default.targets,",
+                "    [{",
+                '      job         = "alloy",',
+                '      __address__ = "127.0.0.1:6987",',
+                "    }],",
+                "  )",
+                *(rules or [""]),
+                "}",
+            ]
+        )
+
+    def _render_local_metrics_scrape(self) -> str:
+        return "\n".join(
+            [
+                'prometheus.scrape "default" {',
+                "  targets    = discovery.relabel.local_metrics.output",
+                '  job_name   = "alloy-local"',
+                f"  forward_to = {self._metrics_forward_to()}",
+                "}",
+            ]
+        )
+
+    def _render_remote_write(self) -> str:
+        endpoint_blocks = "\n".join(
+            [
+                "\n".join(
+                    [
+                        "  endpoint {",
+                        f'    url = "{endpoint}"',
+                        "  }",
+                    ]
+                )
+                for endpoint in self._remote_write_endpoints
+            ]
+        )
+        return "\n".join(
+            [
+                f'prometheus.remote_write "{REMOTE_WRITE_COMPONENT_NAME}" {{',
+                endpoint_blocks,
+                "",
+                "  wal {",
+                f'    max_keepalive_time = "{REMOTE_WRITE_MAX_KEEPALIVE}"',
+                "  }",
+                "}",
+            ]
+        )
+
+    def _render_metrics_scrape(self, scrape_job: MetricsScrapeJob) -> str:
+        component_name = self._sanitize_component_name(scrape_job.job_name)
+        lines = [
+            f'prometheus.scrape "{component_name}" {{',
+            "  targets = [",
+            *self._render_targets(scrape_job.targets),
+            "  ]",
+            f"  job_name = {json.dumps(scrape_job.job_name)}",
+        ]
+        if scrape_job.metrics_path:
+            lines.append(f"  metrics_path = {json.dumps(scrape_job.metrics_path)}")
+        if scrape_job.scheme:
+            lines.append(f"  scheme = {json.dumps(scrape_job.scheme)}")
+        if scrape_job.scrape_interval:
+            lines.append(f"  scrape_interval = {json.dumps(scrape_job.scrape_interval)}")
+        if scrape_job.scrape_timeout:
+            lines.append(f"  scrape_timeout = {json.dumps(scrape_job.scrape_timeout)}")
+        lines.append(f"  forward_to = {self._metrics_forward_to()}")
+        lines.append("}")
+        return "\n".join(lines)
+
+    def _render_targets(self, targets: list[ScrapeTarget]) -> list[str]:
+        rendered: list[str] = []
+        for target in targets:
+            rendered.extend(
+                [
+                    "    {",
+                    f'      __address__ = "{target.address}",',
+                    *self._render_target_labels(target.labels),
+                    "    },",
+                ]
+            )
+        return rendered
+
+    def _render_target_labels(self, labels: dict[str, str]) -> list[str]:
+        lines = []
+        for key in sorted(labels):
+            lines.append(f"      {self._render_key(key)} = {json.dumps(labels[key])},")
+        return lines
 
     def _render_live_debugging(self) -> str:
         return "\n".join(
@@ -220,6 +365,22 @@ class ConfigBuilder:
                 "}",
             ]
         )
+
+    def _metrics_forward_to(self) -> str:
+        if not self._remote_write_endpoints:
+            return "[]"
+        return f"[prometheus.remote_write.{REMOTE_WRITE_COMPONENT_NAME}.receiver]"
+
+    @staticmethod
+    def _sanitize_component_name(name: str) -> str:
+        sanitized = re.sub(r"[^a-zA-Z0-9_]+", "_", name).strip("_").lower()
+        return sanitized or "metrics"
+
+    @staticmethod
+    def _render_key(key: str) -> str:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            return key
+        return json.dumps(key)
 
     @staticmethod
     def _format_matches(values: list[str]) -> str:
