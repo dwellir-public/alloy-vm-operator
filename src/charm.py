@@ -501,11 +501,30 @@ class AlloyCharm(ops.CharmBase):
                     return []
                 scrape_targets.append(
                     ScrapeTarget(
-                        address=target,
+                        address=self._normalize_scrape_target(target),
                         labels={str(key): str(value) for key, value in labels.items()},
                     )
                 )
         return scrape_targets
+
+    @staticmethod
+    def _normalize_scrape_target(target: str) -> str:
+        """Normalize a scrape target, bracketing IPv6 host literals when needed."""
+        target = target.strip()
+        if not target or target.startswith("["):
+            return target
+        if target.count(":") <= 1:
+            return target
+        host, _, port = target.rpartition(":")
+        if host and port.isdigit():
+            try:
+                resolved_host = socket.gethostbyaddr(host)[0]
+            except (socket.herror, OSError):
+                resolved_host = ""
+            if resolved_host:
+                return f"{resolved_host}:{port}"
+            return f"[{host}]:{port}"
+        return f"[{target}]"
 
     def _post_config_status(self, active_message: str) -> ops.StatusBase:
         """Return the desired post-config status for the current relation state."""

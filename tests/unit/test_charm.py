@@ -4,6 +4,7 @@
 # Learn more about testing at: https://juju.is/docs/sdk/testing
 
 from dataclasses import replace
+import socket
 
 from ops import testing
 
@@ -262,6 +263,108 @@ def test_metrics_remote_write_renders_remote_scrape_jobs(monkeypatch):
     assert 'prometheus.scrape "juju_model_dummychain" {' in rendered
     assert '__address__ = "10.0.0.20:9100"' in rendered
     assert 'juju_unit = "dummychain/0"' in rendered
+    assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
+
+
+def test_metrics_remote_write_prefers_reverse_dns_hostname_for_ipv6_scrape_targets(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.MetricsEndpointConsumer.jobs",
+        lambda _self: [
+            {
+                "job_name": "juju_model_dummychain_ipv6",
+                "metrics_path": "/metrics",
+                "static_configs": [
+                    {
+                        "targets": ["2001:db8:1234:1:216:3eff:fe67:c007:9090"],
+                        "labels": {"juju_unit": "dummychain/0"},
+                    }
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: [{"url": "http://[2001:db8::1]:9009/api/v1/push"}]),
+    )
+    monkeypatch.setattr(
+        "charm.socket.gethostbyaddr",
+        lambda host: ("juju-595a8a-6.lxd", [], [host]),
+    )
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert '__address__ = "juju-595a8a-6.lxd:9090"' in rendered
+    assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
+
+
+def test_metrics_remote_write_brackets_ipv6_scrape_targets_when_reverse_dns_missing(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.MetricsEndpointConsumer.jobs",
+        lambda _self: [
+            {
+                "job_name": "juju_model_dummychain_ipv6",
+                "metrics_path": "/metrics",
+                "static_configs": [{"targets": ["2001:db8:1234:1:216:3eff:fe67:c007:9090"]}],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: [{"url": "http://[2001:db8::1]:9009/api/v1/push"}]),
+    )
+    monkeypatch.setattr("charm.socket.gethostbyaddr", lambda host: (_ for _ in ()).throw(socket.herror()))
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert '__address__ = "[2001:db8:1234:1:216:3eff:fe67:c007]:9090"' in rendered
     assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
 
 
