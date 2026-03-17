@@ -18,6 +18,9 @@ DEFAULT_PACKAGE_CONFIG_BACKUP_PATH = os.path.join(
 DEFAULT_CONFIG_BACKUP_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.alloy.bak")
 REMOTE_WRITE_COMPONENT_NAME = "metrics"
 REMOTE_WRITE_MAX_KEEPALIVE = "30m"
+DEFAULT_SYSLOG_ACCESS_DROP_EXPRESSIONS = [
+    '.*"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE) .* HTTP/.*"',
+]
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,10 @@ class ConfigBuilder:
         systemd_units: list[str],
         live_debugging: bool = False,
         enable_syslog_receivers: bool = False,
+        syslog_drop_access_logs: bool = False,
+        syslog_drop_expressions: list[str] | None = None,
+        syslog_rate_limit: int = 0,
+        syslog_rate_burst: int = 0,
         receiver_hostname: str = "",
         receiver_ip: str = "",
         topology_labels: dict[str, str],
@@ -62,6 +69,10 @@ class ConfigBuilder:
         self._systemd_units = systemd_units
         self._live_debugging = live_debugging
         self._enable_syslog_receivers = enable_syslog_receivers
+        self._syslog_drop_access_logs = syslog_drop_access_logs
+        self._syslog_drop_expressions = syslog_drop_expressions or []
+        self._syslog_rate_limit = syslog_rate_limit
+        self._syslog_rate_burst = syslog_rate_burst
         self._receiver_hostname = receiver_hostname
         self._receiver_ip = receiver_ip
         self._topology_labels = topology_labels
@@ -99,6 +110,7 @@ class ConfigBuilder:
                 [
                     self._render_syslog_relabel(),
                     "",
+                    *self._render_syslog_processor_blocks(),
                     self._render_syslog_source(),
                     "",
                 ]
@@ -287,7 +299,7 @@ class ConfigBuilder:
         receiver_hostname = self._receiver_hostname or "unknown"
         receiver_ip = self._receiver_ip or "unknown"
         forward_to = (
-            "  forward_to = [loki.write.main.receiver]"
+            "  forward_to = [loki.process.remote_syslog.receiver]"
             if self._loki_endpoints
             else "  forward_to = []"
         )
@@ -315,6 +327,41 @@ class ConfigBuilder:
                 "}",
             ]
         )
+
+    def _render_syslog_processor_blocks(self) -> list[str]:
+        if not self._loki_endpoints:
+            return []
+        return [self._render_remote_syslog_processor(), ""]
+
+    def _render_remote_syslog_processor(self) -> str:
+        lines = ['loki.process "remote_syslog" {']
+        for expression in self._effective_syslog_drop_expressions():
+            lines.extend(
+                [
+                    "  stage.drop {",
+                    f"    expression = {json.dumps(expression)}",
+                    "  }",
+                    "",
+                ]
+            )
+        if self._should_render_syslog_rate_limit():
+            lines.extend(
+                [
+                    "  stage.limit {",
+                    f"    rate = {self._syslog_rate_limit}",
+                    f"    burst = {self._effective_syslog_rate_burst()}",
+                    "    drop = true",
+                    "  }",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "  forward_to = [loki.write.main.receiver]",
+                "}",
+            ]
+        )
+        return "\n".join(lines)
 
     def _render_juju_processor(self) -> str:
         labels_block = "\n".join(self._render_topology_labels())
@@ -370,6 +417,21 @@ class ConfigBuilder:
         if not self._remote_write_endpoints:
             return "[]"
         return f"[prometheus.remote_write.{REMOTE_WRITE_COMPONENT_NAME}.receiver]"
+
+    def _effective_syslog_drop_expressions(self) -> list[str]:
+        expressions: list[str] = []
+        if self._syslog_drop_access_logs:
+            expressions.extend(DEFAULT_SYSLOG_ACCESS_DROP_EXPRESSIONS)
+        expressions.extend(self._syslog_drop_expressions)
+        return expressions
+
+    def _should_render_syslog_rate_limit(self) -> bool:
+        return self._syslog_rate_limit > 0
+
+    def _effective_syslog_rate_burst(self) -> int:
+        if self._syslog_rate_burst > 0:
+            return self._syslog_rate_burst
+        return self._syslog_rate_limit
 
     @staticmethod
     def _sanitize_component_name(name: str) -> str:

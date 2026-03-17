@@ -3,8 +3,8 @@
 #
 # Learn more about testing at: https://juju.is/docs/sdk/testing
 
-from dataclasses import replace
 import socket
+from dataclasses import replace
 
 from ops import testing
 
@@ -153,6 +153,10 @@ def test_syslog_receivers_enabled_renders_tcp_udp_blocks(monkeypatch):
         "custom_args": DEFAULT_ARGS,
         "alloy-livedebugging": False,
         "enable-syslogreceivers": True,
+        "syslog-drop-access-logs": False,
+        "syslog-drop-expressions": "",
+        "syslog-rate-limit": 0,
+        "syslog-rate-burst": 0,
         "systemd-units": "",
         "log-level": "info",
     }
@@ -161,6 +165,7 @@ def test_syslog_receivers_enabled_renders_tcp_udp_blocks(monkeypatch):
 
     rendered = seen["config"]
     assert 'loki.source.syslog "receiver" {' in rendered
+    assert 'loki.process "remote_syslog" {' not in rendered
     assert 'protocol = "udp"' in rendered
     assert 'protocol = "tcp"' in rendered
     assert 'receiver_hostname = "receiver-host"' in rendered
@@ -190,6 +195,10 @@ def test_syslog_receivers_drop_logs_without_loki_endpoints(monkeypatch):
         "custom_args": DEFAULT_ARGS,
         "alloy-livedebugging": False,
         "enable-syslogreceivers": True,
+        "syslog-drop-access-logs": False,
+        "syslog-drop-expressions": "",
+        "syslog-rate-limit": 0,
+        "syslog-rate-burst": 0,
         "systemd-units": "",
         "log-level": "info",
     }
@@ -199,7 +208,240 @@ def test_syslog_receivers_drop_logs_without_loki_endpoints(monkeypatch):
     rendered = seen["config"]
     assert 'loki.source.syslog "receiver" {' in rendered
     assert "  forward_to = []" in rendered
+    assert 'loki.process "remote_syslog" {' not in rendered
     assert 'forward_to = [loki.process.juju.receiver]' not in rendered
+
+
+def test_syslog_receivers_with_loki_render_remote_processor(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.AlloyCharm._loki_endpoint_urls",
+        lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"],
+    )
+    monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_hostname", lambda *_: "receiver-host")
+    monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_ip", lambda *_: "10.0.0.10")
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": True,
+        "syslog-drop-access-logs": False,
+        "syslog-drop-expressions": "",
+        "syslog-rate-limit": 0,
+        "syslog-rate-burst": 0,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert 'loki.process "remote_syslog" {' in rendered
+    assert "  forward_to = [loki.write.main.receiver]" in rendered
+    assert "  forward_to = [loki.process.remote_syslog.receiver]" in rendered
+
+
+def test_syslog_drop_controls_render_access_and_limit_stages(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.AlloyCharm._loki_endpoint_urls",
+        lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"],
+    )
+    monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_hostname", lambda *_: "receiver-host")
+    monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_ip", lambda *_: "10.0.0.10")
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": True,
+        "syslog-drop-access-logs": True,
+        "syslog-drop-expressions": "foo\nbar",
+        "syslog-rate-limit": 25,
+        "syslog-rate-burst": 100,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert 'loki.process "remote_syslog" {' in rendered
+    assert '    expression = "foo"' in rendered
+    assert '    expression = "bar"' in rendered
+    assert "(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)" in rendered
+    assert "    rate = 25" in rendered
+    assert "    burst = 100" in rendered
+
+
+def test_syslog_receiver_relation_publishes_ready_receiver(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    relation = testing.Relation(
+        endpoint="syslog-receiver",
+        interface="syslog",
+        remote_app_name="haproxy-dataplane-api",
+    )
+    monkeypatch.setattr("charm.AlloyCharm._loki_endpoint_urls", lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"])
+    monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_ip", lambda *_: "10.0.0.10")
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": True,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(
+        ctx.on.relation_created(relation),
+        testing.State(leader=True, config=config, relations=[relation]),
+    )
+
+    relation_out = state_out.get_relation(relation.id)
+    assert relation_out.local_unit_data == {
+        "address": "10.0.0.10",
+        "port": "1514",
+        "protocols": "tcp,udp",
+        "recommended-protocol": "tcp",
+        "ready": "true",
+        "reason": "ready",
+    }
+    assert relation_out.local_app_data == relation_out.local_unit_data
+
+
+def test_syslog_receiver_relation_not_ready_without_loki(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    relation = testing.Relation(
+        endpoint="syslog-receiver",
+        interface="syslog",
+        remote_app_name="haproxy-dataplane-api",
+    )
+    monkeypatch.setattr("charm.AlloyCharm._loki_endpoint_urls", lambda *_: [])
+    monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_ip", lambda *_: "10.0.0.10")
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": True,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(
+        ctx.on.relation_created(relation),
+        testing.State(leader=True, config=config, relations=[relation]),
+    )
+
+    relation_out = state_out.get_relation(relation.id)
+    assert relation_out.local_unit_data == {
+        "address": "10.0.0.10",
+        "port": "1514",
+        "protocols": "tcp,udp",
+        "recommended-protocol": "tcp",
+        "ready": "false",
+        "reason": "waiting for send-loki-logs relation",
+    }
+
+
+def test_syslog_receiver_relation_clears_connection_details_when_disabled(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    relation = testing.Relation(
+        endpoint="syslog-receiver",
+        interface="syslog",
+        remote_app_name="haproxy-dataplane-api",
+        local_app_data={"address": "stale", "port": "1514"},
+        local_unit_data={"address": "stale", "port": "1514"},
+    )
+    monkeypatch.setattr("charm.AlloyCharm._loki_endpoint_urls", lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"])
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(
+        ctx.on.relation_created(relation),
+        testing.State(leader=True, config=config, relations=[relation]),
+    )
+
+    relation_out = state_out.get_relation(relation.id)
+    assert relation_out.local_unit_data == {
+        "ready": "false",
+        "reason": "syslog receivers disabled",
+        "recommended-protocol": "tcp",
+    }
+    assert relation_out.local_app_data == relation_out.local_unit_data
+
+
+def test_config_changed_refreshes_syslog_receiver_relation(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    relation = testing.Relation(
+        endpoint="syslog-receiver",
+        interface="syslog",
+        remote_app_name="haproxy-dataplane-api",
+    )
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.write_config_text", lambda *_, **__: None)
+    monkeypatch.setattr("charm.AlloyCharm._loki_endpoint_urls", lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"])
+    monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_ip", lambda *_: "10.0.0.10")
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": True,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(
+        ctx.on.config_changed(),
+        testing.State(leader=True, config=config, relations=[relation]),
+    )
+
+    relation_out = state_out.get_relation(relation.id)
+    assert relation_out.local_unit_data["ready"] == "true"
+    assert relation_out.local_unit_data["address"] == "10.0.0.10"
+    assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
 
 
 def test_metrics_remote_write_renders_remote_scrape_jobs(monkeypatch):
@@ -345,7 +587,10 @@ def test_metrics_remote_write_brackets_ipv6_scrape_targets_when_reverse_dns_miss
         "charm.PrometheusRemoteWriteConsumer.endpoints",
         property(lambda _self: [{"url": "http://[2001:db8::1]:9009/api/v1/push"}]),
     )
-    monkeypatch.setattr("charm.socket.gethostbyaddr", lambda host: (_ for _ in ()).throw(socket.herror()))
+    monkeypatch.setattr(
+        "charm.socket.gethostbyaddr",
+        lambda host: (_ for _ in ()).throw(socket.herror()),
+    )
 
     def write_config_text(config_text: str, **_):
         seen["config"] = config_text

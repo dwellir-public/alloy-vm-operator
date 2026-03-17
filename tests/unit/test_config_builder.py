@@ -20,6 +20,10 @@ def _builder(**kwargs) -> ConfigBuilder:
         "systemd_units": [],
         "live_debugging": False,
         "enable_syslog_receivers": False,
+        "syslog_drop_access_logs": False,
+        "syslog_drop_expressions": [],
+        "syslog_rate_limit": 0,
+        "syslog_rate_burst": 0,
         "receiver_hostname": "",
         "receiver_ip": "",
         "topology_labels": TOPOLOGY,
@@ -82,3 +86,66 @@ def test_remote_scrape_jobs_are_rendered_with_topology_labels():
     assert 'job_name = "juju_test_model_dummychain_prometheus_scrape"' in rendered
     assert 'scrape_interval = "30s"' in rendered
     assert 'scrape_timeout = "10s"' in rendered
+
+
+def test_syslog_receivers_without_loki_drop_remote_logs():
+    rendered = _builder(
+        enable_syslog_receivers=True,
+        receiver_hostname="receiver-host",
+        receiver_ip="10.0.0.10",
+    ).build()
+
+    assert 'loki.source.syslog "receiver" {' in rendered
+    assert "  forward_to = []" in rendered
+    assert 'loki.process "remote_syslog" {' not in rendered
+
+
+def test_syslog_receivers_with_loki_use_remote_processor():
+    rendered = _builder(
+        loki_endpoints=["http://10.0.0.20:3100/loki/api/v1/push"],
+        enable_syslog_receivers=True,
+        receiver_hostname="receiver-host",
+        receiver_ip="10.0.0.10",
+    ).build()
+
+    assert 'loki.process "remote_syslog" {' in rendered
+    assert "  forward_to = [loki.write.main.receiver]" in rendered
+    assert 'loki.source.syslog "receiver" {' in rendered
+    assert "  forward_to = [loki.process.remote_syslog.receiver]" in rendered
+
+
+def test_syslog_drop_access_logs_renders_drop_stage():
+    rendered = _builder(
+        loki_endpoints=["http://10.0.0.20:3100/loki/api/v1/push"],
+        enable_syslog_receivers=True,
+        syslog_drop_access_logs=True,
+    ).build()
+
+    assert 'loki.process "remote_syslog" {' in rendered
+    assert "  stage.drop {" in rendered
+    assert '(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)' in rendered
+
+
+def test_syslog_custom_drop_expressions_render_all_entries():
+    rendered = _builder(
+        loki_endpoints=["http://10.0.0.20:3100/loki/api/v1/push"],
+        enable_syslog_receivers=True,
+        syslog_drop_expressions=["foo", "bar"],
+    ).build()
+
+    assert '    expression = "foo"' in rendered
+    assert '    expression = "bar"' in rendered
+
+
+def test_syslog_rate_limit_renders_limit_stage():
+    rendered = _builder(
+        loki_endpoints=["http://10.0.0.20:3100/loki/api/v1/push"],
+        enable_syslog_receivers=True,
+        syslog_rate_limit=25,
+        syslog_rate_burst=100,
+    ).build()
+
+    assert "  stage.limit {" in rendered
+    assert "    rate = 25" in rendered
+    assert "    burst = 100" in rendered
+    assert "    drop = true" in rendered

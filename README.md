@@ -116,8 +116,127 @@ juju config alloy enable-syslogreceivers=true
 Behavior:
 - Starts `loki.source.syslog` listeners for both TCP and UDP on `:1514`.
 - Applies relabel rules for remote syslog metadata.
-- Forwards syslog directly to `loki.write.main` (no Juju topology processor on syslog flow).
+- Routes remote syslog through a dedicated `loki.process "remote_syslog"` stage before
+  `loki.write.main`.
+- Does not add Juju topology labels to remote syslog.
 - If there is no `send-loki-logs` relation, syslog is dropped (`forward_to = []`).
+
+### Optional remote syslog drop controls
+
+The remote syslog pipeline can be reduced before forwarding to Loki.
+
+Charm config:
+
+- `syslog-drop-access-logs`
+- `syslog-drop-expressions`
+- `syslog-rate-limit`
+- `syslog-rate-burst`
+
+Behavior:
+
+- `syslog-drop-access-logs=true` drops common request-style access-log lines such as
+  `GET ... HTTP/...` before they reach Loki.
+- `syslog-drop-expressions` accepts newline-separated regular expressions for additional
+  remote-syslog-only drops.
+- `syslog-rate-limit` and `syslog-rate-burst` apply a `stage.limit` guard to the
+  surviving remote syslog stream.
+
+This filtering only affects logs received through `loki.source.syslog "receiver"`.
+Local journal scraping is unaffected.
+
+Recommended operator use:
+
+- start by suppressing noisy logs at the source charm when possible
+- use Alloy as the second guardrail when a related charm still emits too much remote syslog
+- keep Loki retention finite as the final guardrail
+
+Recommended starting profiles:
+
+- keep all remote syslog:
+  - leave all `syslog-*` drop controls at their defaults
+- drop common HAProxy-style access logs but keep service/application logs:
+  - `syslog-drop-access-logs=true`
+- drop known noisy custom patterns as well:
+  - set `syslog-drop-expressions` to newline-separated regular expressions
+- rate-limit any surviving bursty remote syslog:
+  - set both `syslog-rate-limit` and `syslog-rate-burst`
+
+Example: drop common access logs
+
+```bash
+juju config alloy syslog-drop-access-logs=true
+```
+
+Example: drop access logs and add a burst guard
+
+```bash
+juju config alloy syslog-rate-limit=25
+juju config alloy syslog-rate-burst=100
+```
+
+Example: add custom drop expressions
+
+```bash
+juju config alloy syslog-drop-expressions=$'healthcheck\\n/readiness\\n/livez'
+```
+
+This means:
+
+- request-style access logs are removed before they reach Loki
+- only `25` surviving remote-syslog lines per second are kept
+- short bursts up to `100` lines are allowed before excess lines are dropped
+
+This is useful when a related charm can generate enough access traffic to
+inflate Loki ingestion and object-storage growth.
+
+This is intended as a second guardrail. Prefer suppressing noisy logs at the source
+charm first when possible.
+
+Reset to default behavior:
+
+```bash
+juju config alloy syslog-drop-access-logs=false
+juju config alloy syslog-drop-expressions=''
+juju config alloy syslog-rate-limit=0
+juju config alloy syslog-rate-burst=0
+```
+
+Verify on the unit:
+
+```bash
+juju ssh alloy/<unit> 'grep -n "loki.process \"remote_syslog\"" -A20 /etc/alloy/config.alloy'
+```
+
+Verify in Loki/Grafana:
+
+- send a known manual syslog message and confirm it still appears
+- trigger the noisy traffic pattern, for example HAProxy access requests
+- confirm the access-log lines no longer appear while the manual message still does
+
+### `syslog-receiver` relation contract
+
+When another charm relates to `alloy:syslog-receiver`, Alloy now publishes the
+receiver details over relation data.
+
+Published keys:
+- `address`
+- `port`
+- `protocols`
+- `recommended-protocol`
+- `ready`
+- `reason`
+
+Release-1 behavior:
+- `port` is `1514`
+- `protocols` is `tcp,udp`
+- `recommended-protocol` is `tcp`
+- `ready=true` only when syslog receivers are enabled and Alloy has an active
+  `send-loki-logs` path to Loki
+- if Alloy would drop the received logs because no Loki relation exists, it
+  publishes `ready=false` and `reason=waiting for send-loki-logs relation`
+
+This makes Alloy suitable as the immediate syslog receiver for charms such as
+`haproxy-dataplane-api`, while `loki-vm` remains the downstream log store.
 
 Verify on the unit:
 

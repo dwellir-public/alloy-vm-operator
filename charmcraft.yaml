@@ -56,6 +56,33 @@ config:
         directly to Loki (without Juju topology relabeling).
       default: false
       type: boolean
+    syslog-drop-access-logs:
+      description: |
+        Drop common request-style remote syslog lines before forwarding them to
+        Loki. This is intended as a second guardrail for high-volume senders
+        such as HAProxy and only affects remote syslog received through
+        `syslog-receiver`.
+      default: false
+      type: boolean
+    syslog-drop-expressions:
+      description: |
+        Newline-separated regular expressions to drop from remote syslog before
+        forwarding to Loki. These expressions apply only to logs received
+        through `syslog-receiver`.
+      default: ""
+      type: string
+    syslog-rate-limit:
+      description: |
+        Maximum number of remote syslog lines per second to forward after drop
+        rules are applied. Set to 0 to disable Alloy-side rate limiting.
+      default: 0
+      type: int
+    syslog-rate-burst:
+      description: |
+        Maximum remote syslog burst size when `syslog-rate-limit` is enabled.
+        Set to 0 to use the same value as `syslog-rate-limit`.
+      default: 0
+      type: int
 
 parts:
   charm:

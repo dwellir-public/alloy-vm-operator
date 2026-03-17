@@ -28,6 +28,11 @@ from config_builder import (
 
 logger = logging.getLogger(__name__)
 
+SYSLOG_RELATION_NAME = "syslog-receiver"
+SYSLOG_RECEIVER_PORT = "1514"
+SYSLOG_RECEIVER_PROTOCOLS = "tcp,udp"
+SYSLOG_RECOMMENDED_PROTOCOL = "tcp"
+
 
 class AlloyCharm(ops.CharmBase):
     """Machine charm for Grafana Alloy."""
@@ -84,6 +89,14 @@ class AlloyCharm(ops.CharmBase):
             self._remote_write_consumer.on.endpoints_changed,
             self._on_metrics_relation_changed,
         )
+        self.framework.observe(
+            self.on[SYSLOG_RELATION_NAME].relation_created,
+            self._on_syslog_receiver_relation_event,
+        )
+        self.framework.observe(
+            self.on[SYSLOG_RELATION_NAME].relation_broken,
+            self._on_syslog_receiver_relation_event,
+        )
 
     def _on_install(self, event):
         self.unit.status = ops.MaintenanceStatus("Installing Alloy")
@@ -108,11 +121,13 @@ class AlloyCharm(ops.CharmBase):
         version = alloy.get_version()
         if version is not None:
             self.unit.set_workload_version(version)
+        self._refresh_syslog_receiver_relations()
         self.unit.status = ops.ActiveStatus("Alloy is running")
 
     def _on_config_changed(self, event):
         self.unit.status = ops.MaintenanceStatus("Configuring Alloy")
         if self._configure():
+            self._refresh_syslog_receiver_relations()
             self.unit.status = self._post_config_status("Alloy config updated and valid")
         else:
             self.unit.status = ops.MaintenanceStatus(
@@ -127,6 +142,7 @@ class AlloyCharm(ops.CharmBase):
         """Update config when Loki endpoints change."""
         self.unit.status = ops.MaintenanceStatus("Updating Loki endpoints")
         if self._configure():
+            self._refresh_syslog_receiver_relations()
             self.unit.status = self._post_config_status("Alloy config updated and valid")
         else:
             self.unit.status = ops.MaintenanceStatus(
@@ -147,13 +163,19 @@ class AlloyCharm(ops.CharmBase):
         """Handle periodic status updates (detect drift and workload health)."""
         if not alloy.is_active():
             self.unit.status = ops.MaintenanceStatus("Alloy service not running")
+            self._refresh_syslog_receiver_relations()
             return
         version = alloy.get_version()
         if version is not None:
             self.unit.set_workload_version(version)
         self._reconcile_config_drift_status()
+        self._refresh_syslog_receiver_relations()
         if self._is_service_down_status() and not self._stored.config_drifted:
             self.unit.status = self._post_config_status("Alloy is running.")
+
+    def _on_syslog_receiver_relation_event(self, event):
+        """Publish current syslog receiver details for related requirers."""
+        self._refresh_syslog_receiver_relations()
 
     def _configure(self) -> bool:
         """Render, validate, and persist the Alloy configuration.
@@ -292,6 +314,10 @@ class AlloyCharm(ops.CharmBase):
             systemd_units=self._systemd_units(),
             live_debugging=self._live_debugging_enabled(),
             enable_syslog_receivers=self._syslog_receivers_enabled(),
+            syslog_drop_access_logs=self._syslog_drop_access_logs(),
+            syslog_drop_expressions=self._syslog_drop_expressions(),
+            syslog_rate_limit=self._syslog_rate_limit(),
+            syslog_rate_burst=self._syslog_rate_burst(),
             receiver_hostname=self._syslog_receiver_hostname(),
             receiver_ip=self._syslog_receiver_ip(),
             topology_labels=self._topology.as_dict(
@@ -376,6 +402,31 @@ class AlloyCharm(ops.CharmBase):
         """Return True when syslog receiver listeners should be enabled."""
         return bool(self.config.get("enable-syslogreceivers", False))
 
+    def _syslog_drop_access_logs(self) -> bool:
+        """Return True when common remote syslog access logs should be dropped."""
+        return bool(self.config.get("syslog-drop-access-logs", False))
+
+    def _syslog_drop_expressions(self) -> list[str]:
+        """Return additional remote syslog drop expressions from charm config."""
+        raw = str(self.config.get("syslog-drop-expressions", "")).strip()
+        if not raw:
+            return []
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    def _syslog_rate_limit(self) -> int:
+        """Return the remote syslog rate limit, disabled when non-positive."""
+        try:
+            return max(int(self.config.get("syslog-rate-limit", 0)), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _syslog_rate_burst(self) -> int:
+        """Return the remote syslog burst limit, disabled when non-positive."""
+        try:
+            return max(int(self.config.get("syslog-rate-burst", 0)), 0)
+        except (TypeError, ValueError):
+            return 0
+
     def _syslog_receiver_hostname(self) -> str:
         """Return hostname label for syslog receiver listeners."""
         try:
@@ -385,7 +436,7 @@ class AlloyCharm(ops.CharmBase):
 
     def _syslog_receiver_ip(self) -> str:
         """Return ingress IP label for syslog receiver listeners."""
-        for endpoint in ("syslog-receiver", ""):
+        for endpoint in (SYSLOG_RELATION_NAME, ""):
             try:
                 binding = self.model.get_binding(endpoint)
             except (ops.ModelError, KeyError):
@@ -393,6 +444,53 @@ class AlloyCharm(ops.CharmBase):
             if binding and binding.network.ingress_address:
                 return str(binding.network.ingress_address)
         return "0.0.0.0"
+
+    def _refresh_syslog_receiver_relations(self) -> None:
+        """Publish syslog receiver details to related requirers."""
+        if SYSLOG_RELATION_NAME not in self.model.relations:
+            return
+
+        unit_payload = self._syslog_receiver_relation_payload()
+        app_payload = self._syslog_receiver_relation_payload(include_address=True)
+
+        for relation in self.model.relations[SYSLOG_RELATION_NAME]:
+            self._sync_relation_databag(relation.data[self.unit], unit_payload)
+            if self.unit.is_leader():
+                self._sync_relation_databag(relation.data[self.app], app_payload)
+
+    def _syslog_receiver_relation_payload(self, *, include_address: bool = True) -> dict[str, str]:
+        """Return relation data describing the current syslog receiver state."""
+        ready, reason = self._syslog_receiver_ready_state()
+        payload = {
+            "ready": "true" if ready else "false",
+            "reason": reason,
+            "recommended-protocol": SYSLOG_RECOMMENDED_PROTOCOL,
+        }
+        if self._syslog_receivers_enabled():
+            payload["port"] = SYSLOG_RECEIVER_PORT
+            payload["protocols"] = SYSLOG_RECEIVER_PROTOCOLS
+            if include_address:
+                payload["address"] = self._syslog_receiver_ip()
+        return payload
+
+    def _syslog_receiver_ready_state(self) -> tuple[bool, str]:
+        """Return readiness and reason for the syslog receiver relation."""
+        if not self._syslog_receivers_enabled():
+            return False, "syslog receivers disabled"
+        if not self._loki_endpoint_urls():
+            return False, "waiting for send-loki-logs relation"
+        return True, "ready"
+
+    @staticmethod
+    def _sync_relation_databag(databag: ops.RelationDataContent, desired: dict[str, str]) -> None:
+        """Update a relation databag in place, removing stale keys."""
+        current_keys = set(databag)
+        desired_keys = set(desired)
+        for key in current_keys - desired_keys:
+            databag.pop(key, None)
+        for key, value in desired.items():
+            if databag.get(key) != value:
+                databag[key] = value
 
     def _loki_endpoint_urls(self) -> list[str]:
         return [

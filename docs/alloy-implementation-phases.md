@@ -133,6 +133,8 @@ Post-release logging extensions:
 - [x] Add basic receiver labels such as hostname and receiver IP.
 - [x] Forward received syslog to Loki as a transparent proxy.
 - [x] Drop received syslog when no Loki relation exists to avoid buffering on disk.
+- [x] Publish `syslog-receiver` relation data with receiver address, port,
+      protocols, readiness, and recommended protocol.
 - [x] Add workload health checks in `update-status`.
 
 ## Phase 7 - Actions and upgrades
@@ -158,3 +160,5 @@ Post-release logging extensions:
 Related planning:
 
 - See `docs/alloy-metrics-scrape-feature-plan.md` for the dedicated metrics scrape and remote write feature plan.
+- See `docs/alloy-syslog-receiver-relation-plan.md` for the provider-side syslog receiver relation plan used by charms such as `haproxy-dataplane-api`.
+- See `docs/alloy-syslog-drop-controls-plan.md` for the follow-up plan to drop or rate-limit remote syslog before forwarding it to `loki-vm`.
