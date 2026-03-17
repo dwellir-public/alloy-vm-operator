@@ -1,4 +1,4 @@
-# Alloy Metrics Scrape Feature Plan
+# alloy-vm Metrics Scrape Feature Plan
 
 This document plans a separate Alloy feature area: scraping metrics from multiple related workloads over `prometheus_scrape` and forwarding those metrics to an upstream metrics backend such as `mimir-vm` over `prometheus_remote_write`.
 

@@ -225,12 +225,11 @@ class AlloyCharm(ops.CharmBase):
         self._stored.last_live_debugging = live_debugging
         self._stored.last_syslog_receivers_enabled = syslog_receivers_enabled
         try:
-            # Restart ensures the new config is picked up even if reload support is flaky.
-            # Reload then avoids the service settling with stale runtime state.
+            # A single restart is sufficient to apply the generated config.
+            # Chaining reload after restart can trip systemd start limits.
             alloy.restart()
-            alloy.reload()
         except subprocess.CalledProcessError as exc:
-            logger.warning("Failed to restart/reload Alloy after config update: %s", exc)
+            logger.warning("Failed to restart Alloy after config update: %s", exc)
             return False
         return True
 

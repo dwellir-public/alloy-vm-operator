@@ -77,9 +77,9 @@ loki.process "juju" {
     values = {
       juju_model = "loki-dev-phase0-2",
       juju_model_uuid = "5f4407f5-dc26-434c-8c64-25895d72e442",
-      juju_application = "alloy",
-      juju_unit = "alloy/7",
-      juju_charm = "alloy",
+      juju_application = "alloy-vm",
+      juju_unit = "alloy-vm/7",
+      juju_charm = "alloy-vm",
     }
   }
   forward_to = [loki.write.main.receiver]

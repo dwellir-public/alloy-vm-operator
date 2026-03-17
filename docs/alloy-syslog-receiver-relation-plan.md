@@ -1,4 +1,4 @@
-# Alloy Syslog Receiver Relation Plan
+# alloy-vm Syslog Receiver Relation Plan
 
 This document plans the Alloy-side feature work needed so machine charms such
 as `haproxy-dataplane-api` can send logs to Alloy over Juju relations instead

@@ -1,4 +1,4 @@
-# alloy
+# alloy-vm
 
 ## Metrics scraping to Mimir
 
@@ -39,19 +39,19 @@ This means:
 Relate Alloy to a deployed `mimir-vm` application:
 
 ```bash
-juju relate alloy:send-remote-write mimir-vm:receive-remote-write
+juju relate alloy-vm:send-remote-write mimir-vm:receive-remote-write
 ```
 
 Verify the rendered remote write config on the Alloy unit:
 
 ```bash
-juju ssh alloy/<unit> 'grep -n "prometheus.remote_write \\\"metrics\\\"" -A8 /etc/alloy/config.alloy'
+juju ssh alloy-vm/<unit> 'grep -n "prometheus.remote_write \\\"metrics\\\"" -A8 /etc/alloy/config.alloy'
 ```
 
 Verify a local unix-exporter metric in Mimir:
 
 ```bash
-juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/query?query=node_uname_info{juju_application=\"alloy\"}'"
+juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/query?query=node_uname_info{juju_application=\"alloy-vm\"}'"
 ```
 
 ## Reconfigure Alloy with full override
@@ -59,19 +59,19 @@ juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/que
 Dump the current override value:
 
 ```bash
-juju config alloy config-override
+juju config alloy-vm config-override
 ```
 
 Set a full config override from a file:
 
 ```bash
-juju config alloy config-override="$(cat alloy.conf)"
+juju config alloy-vm config-override="$(cat alloy.conf)"
 ```
 
 Clear override and return to charm-generated config:
 
 ```bash
-juju config alloy config-override=""
+juju config alloy-vm config-override=""
 ```
 
 ## Enable live debugging
@@ -79,7 +79,7 @@ juju config alloy config-override=""
 Enable live debugging mode:
 
 ```bash
-juju config alloy alloy-livedebugging=true
+juju config alloy-vm alloy-livedebugging=true
 ```
 
 What this does:
@@ -89,20 +89,20 @@ What this does:
 Verify on the unit:
 
 ```bash
-juju ssh alloy/<unit> 'grep "^CUSTOM_ARGS=" /etc/default/alloy'
-juju ssh alloy/<unit> 'grep -n "livedebugging" /etc/alloy/config.alloy'
+juju ssh alloy-vm/<unit> 'grep "^CUSTOM_ARGS=" /etc/default/alloy'
+juju ssh alloy-vm/<unit> 'grep -n "livedebugging" /etc/alloy/config.alloy'
 ```
 
 Disable live debugging and restore previous args:
 
 ```bash
-juju config alloy alloy-livedebugging=false
+juju config alloy-vm alloy-livedebugging=false
 ```
 
 Optional: set your baseline custom args that should be restored after disabling:
 
 ```bash
-juju config alloy custom_args="--server.http.listen-addr=0.0.0.0:6987"
+juju config alloy-vm custom_args="--server.http.listen-addr=0.0.0.0:6987"
 ```
 
 ## Enable syslog receivers (phase 6)
@@ -110,7 +110,7 @@ juju config alloy custom_args="--server.http.listen-addr=0.0.0.0:6987"
 Enable TCP+UDP syslog listeners on port `1514`:
 
 ```bash
-juju config alloy enable-syslogreceivers=true
+juju config alloy-vm enable-syslogreceivers=true
 ```
 
 Behavior:
@@ -164,20 +164,20 @@ Recommended starting profiles:
 Example: drop common access logs
 
 ```bash
-juju config alloy syslog-drop-access-logs=true
+juju config alloy-vm syslog-drop-access-logs=true
 ```
 
 Example: drop access logs and add a burst guard
 
 ```bash
-juju config alloy syslog-rate-limit=25
-juju config alloy syslog-rate-burst=100
+juju config alloy-vm syslog-rate-limit=25
+juju config alloy-vm syslog-rate-burst=100
 ```
 
 Example: add custom drop expressions
 
 ```bash
-juju config alloy syslog-drop-expressions=$'healthcheck\\n/readiness\\n/livez'
+juju config alloy-vm syslog-drop-expressions=$'healthcheck\\n/readiness\\n/livez'
 ```
 
 This means:
@@ -195,16 +195,16 @@ charm first when possible.
 Reset to default behavior:
 
 ```bash
-juju config alloy syslog-drop-access-logs=false
-juju config alloy syslog-drop-expressions=''
-juju config alloy syslog-rate-limit=0
-juju config alloy syslog-rate-burst=0
+juju config alloy-vm syslog-drop-access-logs=false
+juju config alloy-vm syslog-drop-expressions=''
+juju config alloy-vm syslog-rate-limit=0
+juju config alloy-vm syslog-rate-burst=0
 ```
 
 Verify on the unit:
 
 ```bash
-juju ssh alloy/<unit> 'grep -n "loki.process \"remote_syslog\"" -A20 /etc/alloy/config.alloy'
+juju ssh alloy-vm/<unit> 'grep -n "loki.process \"remote_syslog\"" -A20 /etc/alloy/config.alloy'
 ```
 
 Verify in Loki/Grafana:
@@ -215,7 +215,7 @@ Verify in Loki/Grafana:
 
 ### `syslog-receiver` relation contract
 
-When another charm relates to `alloy:syslog-receiver`, Alloy now publishes the
+When another charm relates to `alloy-vm:syslog-receiver`, Alloy now publishes the
 receiver details over relation data.
 
 Published keys:
@@ -241,12 +241,12 @@ This makes Alloy suitable as the immediate syslog receiver for charms such as
 Verify on the unit:
 
 ```bash
-juju ssh alloy/<unit> 'grep -n "loki.source.syslog \\\"receiver\\\"" /etc/alloy/config.alloy'
-juju ssh alloy/<unit> 'grep -n "protocol = \\\"udp\\\"\\|protocol = \\\"tcp\\\"" /etc/alloy/config.alloy'
+juju ssh alloy-vm/<unit> 'grep -n "loki.source.syslog \\\"receiver\\\"" /etc/alloy/config.alloy'
+juju ssh alloy-vm/<unit> 'grep -n "protocol = \\\"udp\\\"\\|protocol = \\\"tcp\\\"" /etc/alloy/config.alloy'
 ```
 
 Disable syslog listeners:
 
 ```bash
-juju config alloy enable-syslogreceivers=false
+juju config alloy-vm enable-syslogreceivers=false
 ```

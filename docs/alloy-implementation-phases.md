@@ -1,10 +1,10 @@
-# Alloy VM Charm Implementation Phases
+# alloy-vm Implementation Phases
 
 This document consolidates the Alloy VM charm scope, implementation conventions, and phased delivery plan.
 
 ## Scope
 
-The Alloy charm is a machine charm for Grafana Alloy on Ubuntu. It should install `grafana-alloy`, manage the systemd service, and support Ubuntu 24.04.
+The `alloy-vm` charm is a machine charm for Grafana Alloy on Ubuntu. It should install `grafana-alloy`, manage the systemd service, and support Ubuntu 24.04.
 
 Release 1 is focused on logging:
 

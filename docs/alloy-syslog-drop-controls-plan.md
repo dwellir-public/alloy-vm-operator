@@ -1,4 +1,4 @@
-# Alloy Syslog Drop Controls Plan
+# alloy-vm Syslog Drop Controls Plan
 
 This document plans a follow-up feature for Alloy so remote syslog received
 over `syslog-receiver` can be reduced before it is forwarded to `loki-vm`.
