@@ -16,7 +16,7 @@ The target flow is:
 Already implemented in Alloy:
 
 - `syslog-receiver` is declared as a provided relation in
-  [charmcraft.yaml](/home/erik/Loki-project/alloy-operator/charmcraft.yaml)
+  [charmcraft.yaml](/home/erik/Loki-project/alloy-vm-operator/charmcraft.yaml)
 - Alloy can listen for remote syslog on TCP and UDP `:1514` when
   `enable-syslogreceivers=true`
 - Alloy forwards received syslog to Loki when `send-loki-logs` is related

@@ -35,7 +35,7 @@ The current Alloy charm already has a small local metrics baseline, but no relat
   - `send-loki-logs`
   - `syslog-receiver`
 - there is no `prometheus_scrape` or `prometheus_remote_write` relation metadata
-- there are no vendored metrics relation libraries under `alloy-operator/lib`
+- there are no vendored metrics relation libraries under `alloy-vm-operator/lib`
 - the current charm has no peer relation and no metrics unit coordination logic
 
 So the feature is feasible from the current shape of the charm, but it is not partially implemented yet apart from the local self-scrape stanza.
@@ -221,7 +221,7 @@ Exactly the same pattern applies, but `loki-vm` first needs to provide `promethe
 - labels on the resulting metrics identify the remote model/app/unit
 - local Alloy topology is not added to those sample labels
 
-## Changes Needed In `alloy-operator`
+## Changes Needed In `alloy-vm-operator`
 
 ## Metadata and libraries
 
@@ -305,7 +305,7 @@ There is no plan in this feature area to:
 - when remote write exists, enable bounded WAL buffering
 - document clearly that long upstream outages can still lose samples
 
-## Tests needed in `alloy-operator`
+## Tests needed in `alloy-vm-operator`
 
 - unit tests for relation data to Alloy config translation
 - unit tests for multiple target units across one relation
