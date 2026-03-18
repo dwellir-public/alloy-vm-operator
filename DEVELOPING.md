@@ -1,4 +1,4 @@
-# Developing alloy
+# Developing alloy-vm
 
 This document describes common developer workflows for the charm.
 
@@ -8,19 +8,21 @@ The charm uses `uv` for dependency management. Update Python dependencies in
 `pyproject.toml`, then refresh the lockfile:
 
 ```bash
-cd /home/erik/Loki-project/alloy
+cd /home/erik/Loki-project/alloy-vm-operator
 uv lock
 ```
 
 If you need to install deps locally for development, you can sync all groups:
 
 ```bash
+cd /home/erik/Loki-project/alloy-vm-operator
 uv sync --all-groups
 ```
 
 For a single development environment (unit + integration + lint), use:
 
 ```bash
+cd /home/erik/Loki-project/alloy-vm-operator
 uv sync --group dev
 ```
 
@@ -31,7 +33,7 @@ uv sync --group dev
 Install unit-test dependencies and run the suite:
 
 ```bash
-cd /home/erik/Loki-project/alloy
+cd /home/erik/Loki-project/alloy-vm-operator
 uv sync --group unit
 uv run pytest tests/unit
 ```
@@ -53,7 +55,7 @@ Note: Each integration test run creates a temporary Juju model (jubilant-xxxx). 
 and controller are printed at test start for easier tracking/cleanup.
 
 ```bash
-cd /home/erik/Loki-project/alloy
+cd /home/erik/Loki-project/alloy-vm-operator
 charmcraft pack
 uv sync --group integration
 uv run pytest tests/integration
@@ -62,7 +64,7 @@ uv run pytest tests/integration
 Alternatively, set `CHARM_PATH` to an existing `.charm` file:
 
 ```bash
-CHARM_PATH=/path/to/alloy_ubuntu-24.04-amd64.charm uv run pytest tests/integration
+CHARM_PATH=/path/to/alloy-vm_ubuntu@<base>-amd64.charm uv run pytest tests/integration
 ```
 
 Note: Rebuild the charm (`charmcraft pack`) after code changes so integration tests

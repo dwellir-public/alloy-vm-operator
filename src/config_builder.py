@@ -53,6 +53,8 @@ class ConfigBuilder:
         remote_write_endpoints: list[str],
         metrics_scrape_jobs: list[MetricsScrapeJob],
         systemd_units: list[str],
+        journal_kernel: bool,
+        journal_match_expressions: list[str],
         live_debugging: bool = False,
         enable_syslog_receivers: bool = False,
         syslog_drop_access_logs: bool = False,
@@ -67,6 +69,8 @@ class ConfigBuilder:
         self._remote_write_endpoints = remote_write_endpoints
         self._metrics_scrape_jobs = metrics_scrape_jobs
         self._systemd_units = systemd_units
+        self._journal_kernel = journal_kernel
+        self._journal_match_expressions = journal_match_expressions
         self._live_debugging = live_debugging
         self._enable_syslog_receivers = enable_syslog_receivers
         self._syslog_drop_access_logs = syslog_drop_access_logs
@@ -79,32 +83,41 @@ class ConfigBuilder:
 
     def build(self) -> str:
         """Return the Alloy configuration text."""
-        blocks: list[str] = [
+        blocks = self._render_base_blocks()
+        blocks.extend(self._render_metrics_blocks())
+        blocks.extend(self._render_log_blocks())
+        return "\n".join(blocks).rstrip() + "\n"
+
+    def _render_base_blocks(self) -> list[str]:
+        return [
             self._render_logging(),
             "",
             self._render_unix_exporter(),
             "",
             self._render_local_metrics_relabel(),
             "",
+            *([self._render_remote_write(), ""] if self._remote_write_endpoints else []),
+            self._render_local_metrics_scrape(),
         ]
 
-        if self._remote_write_endpoints:
-            blocks.extend([self._render_remote_write(), ""])
+    def _render_metrics_blocks(self) -> list[str]:
+        if not (self._remote_write_endpoints and self._metrics_scrape_jobs):
+            return []
+        blocks: list[str] = ["", "// METRICS -> REMOTE WRITE", ""]
+        for scrape_job in self._metrics_scrape_jobs:
+            blocks.extend([self._render_metrics_scrape(scrape_job), ""])
+        return blocks
 
-        blocks.append(self._render_local_metrics_scrape())
-
-        if self._remote_write_endpoints and self._metrics_scrape_jobs:
-            blocks.extend(["", "// METRICS -> REMOTE WRITE", ""])
-            for scrape_job in self._metrics_scrape_jobs:
-                blocks.extend([self._render_metrics_scrape(scrape_job), ""])
-
+    def _render_log_blocks(self) -> list[str]:
+        blocks: list[str] = []
         if self._live_debugging:
             blocks.extend([self._render_live_debugging(), ""])
-
-        if self._systemd_units or self._enable_syslog_receivers:
+        if self._has_log_pipeline():
             blocks.extend(["// LOGS -> LOKI (Juju topology labels)", ""])
-        if self._systemd_units:
-            blocks.extend([self._render_journal_source(), ""])
+        for block in self._render_service_journal_sources():
+            blocks.extend([block, ""])
+        for block in self._render_host_journal_sources():
+            blocks.extend([block, ""])
         if self._enable_syslog_receivers:
             blocks.extend(
                 [
@@ -115,10 +128,9 @@ class ConfigBuilder:
                     "",
                 ]
             )
-        if self._systemd_units or self._enable_syslog_receivers:
+        if self._has_log_pipeline():
             blocks.extend([self._render_juju_processor(), self._render_loki_writer()])
-
-        return "\n".join(blocks).rstrip() + "\n"
+        return blocks
 
     def _render_logging(self) -> str:
         return "\n".join(
@@ -255,16 +267,45 @@ class ConfigBuilder:
             ]
         )
 
-    def _render_journal_source(self) -> str:
-        matches = self._format_matches(self._systemd_units)
-        return "\n".join(
-            [
-                'loki.source.journal "journald" {',
-                f'  matches = "{matches}"',
-                "  forward_to = [loki.process.juju.receiver]",
-                "}",
-            ]
+    def _render_service_journal_sources(self) -> list[str]:
+        blocks: list[str] = []
+        for index, unit in enumerate(self._systemd_units):
+            component_name = "journald" if len(self._systemd_units) == 1 else f"journald_{index}"
+            blocks.append(
+                "\n".join(
+                    [
+                        f'loki.source.journal "{component_name}" {{',
+                        f'  matches = "{self._format_unit_match(unit)}"',
+                        "  forward_to = [loki.process.juju.receiver]",
+                        "}",
+                    ]
+                )
+            )
+        return blocks
+
+    def _render_host_journal_sources(self) -> list[str]:
+        forward_to = (
+            "  forward_to = [loki.write.main.receiver]"
+            if self._loki_endpoints
+            else "  forward_to = []"
         )
+        blocks: list[str] = []
+        host_matches = self._host_journal_matches()
+        for index, match in enumerate(host_matches):
+            component_name = (
+                "host_journald" if len(host_matches) == 1 else f"host_journald_{index}"
+            )
+            blocks.append(
+                "\n".join(
+                    [
+                        f'loki.source.journal "{component_name}" {{',
+                        f'  matches = "{match}"',
+                        forward_to,
+                        "}",
+                    ]
+                )
+            )
+        return blocks
 
     def _render_syslog_relabel(self) -> str:
         return "\n".join(
@@ -418,6 +459,23 @@ class ConfigBuilder:
             return "[]"
         return f"[prometheus.remote_write.{REMOTE_WRITE_COMPONENT_NAME}.receiver]"
 
+    def _has_host_journal_source(self) -> bool:
+        return bool(self._host_journal_matches())
+
+    def _has_log_pipeline(self) -> bool:
+        return bool(
+            self._systemd_units
+            or self._has_host_journal_source()
+            or self._enable_syslog_receivers
+        )
+
+    def _host_journal_matches(self) -> list[str]:
+        matches: list[str] = []
+        if self._journal_kernel:
+            matches.append("_TRANSPORT=kernel")
+        matches.extend(self._journal_match_expressions)
+        return matches
+
     def _effective_syslog_drop_expressions(self) -> list[str]:
         expressions: list[str] = []
         if self._syslog_drop_access_logs:
@@ -445,9 +503,8 @@ class ConfigBuilder:
         return json.dumps(key)
 
     @staticmethod
-    def _format_matches(values: list[str]) -> str:
-        clauses = [f"_SYSTEMD_UNIT={value}" for value in values]
-        return " OR ".join(clauses)
+    def _format_unit_match(value: str) -> str:
+        return f"_SYSTEMD_UNIT={value}"
 
     @staticmethod
     def _topology_label_order() -> list[str]:

@@ -4,7 +4,7 @@ This document consolidates the Alloy VM charm scope, implementation conventions,
 
 ## Scope
 
-The `alloy-vm` charm is a machine charm for Grafana Alloy on Ubuntu. It should install `grafana-alloy`, manage the systemd service, and support Ubuntu 24.04.
+The `alloy-vm` charm is a machine charm for Grafana Alloy on Ubuntu. It should install `grafana-alloy`, manage the systemd service, and support Ubuntu 22.04 and 24.04.
 
 Release 1 is focused on logging:
 
@@ -64,6 +64,7 @@ Post-release logging extensions:
 ## Phase 0 - Baseline alignment
 
 - [x] Update `charmcraft.yaml` metadata to match the Alloy VM charm scope.
+- [x] Confirm Ubuntu 22.04 amd64 support.
 - [x] Confirm Ubuntu 24.04 amd64 support.
 - [x] Switch charmcraft build to the `uv` plugin.
 - [x] Align config options with the planned config override pattern.

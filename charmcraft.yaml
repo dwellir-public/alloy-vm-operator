@@ -5,6 +5,7 @@ type: charm
 title: Grafana Alloy VM
 
 platforms:
+  ubuntu@22.04:amd64:
   ubuntu@24.04:amd64:
 
 summary: Machine charm for Grafana Alloy on Ubuntu.
@@ -35,6 +36,21 @@ config:
       description: |
         Comma-separated list of systemd unit names to forward to Loki
         (e.g. "ssh.service, snapd.service"). Leave empty to disable.
+      type: string
+      default: ""
+    journal-kernel:
+      description: |
+        Include host kernel journal messages by adding `_TRANSPORT=kernel` to
+        the broader host journal capture path. These logs are forwarded to Loki
+        without Juju topology labels.
+      type: boolean
+      default: false
+    journal-match-expressions:
+      description: |
+        Newline-separated raw journald match expressions to include in the
+        broader host journal capture path (for example `SYSLOG_IDENTIFIER=lxd`).
+        These expressions are passed through without validation and forwarded to
+        Loki without Juju topology labels.
       type: string
       default: ""
     custom_args:

@@ -301,6 +301,86 @@ def test_syslog_drop_controls_render_access_and_limit_stages(monkeypatch):
     assert "    burst = 100" in rendered
 
 
+def test_journal_kernel_renders_host_journal_source(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.AlloyCharm._loki_endpoint_urls",
+        lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"],
+    )
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "journal-kernel": True,
+        "journal-match-expressions": "",
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert 'loki.source.journal "host_journald" {' in rendered
+    assert 'matches = "_TRANSPORT=kernel"' in rendered
+    assert 'forward_to = [loki.write.main.receiver]' in rendered
+
+
+def test_journal_match_expressions_render_without_juju_topology(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.AlloyCharm._loki_endpoint_urls",
+        lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"],
+    )
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "journal-kernel": False,
+        "journal-match-expressions": "SYSLOG_IDENTIFIER=lxd\n\n_TRANSPORT=kernel",
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert 'loki.source.journal "host_journald_0" {' in rendered
+    assert 'matches = "SYSLOG_IDENTIFIER=lxd"' in rendered
+    assert 'matches = "_TRANSPORT=kernel"' in rendered
+    host_section = rendered.split('loki.source.journal "host_journald_0" {', 1)[1].split(
+        'loki.process "juju" {', 1
+    )[0]
+    assert "juju_model" not in host_section
+
+
 def test_syslog_receiver_relation_publishes_ready_receiver(monkeypatch):
     ctx = testing.Context(AlloyCharm)
     relation = testing.Relation(

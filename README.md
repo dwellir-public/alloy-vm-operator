@@ -1,5 +1,10 @@
 # alloy-vm
 
+Supported bases:
+
+- Ubuntu 22.04 amd64
+- Ubuntu 24.04 amd64
+
 ## Metrics scraping to Mimir
 
 Alloy now supports:
@@ -249,4 +254,113 @@ Disable syslog listeners:
 
 ```bash
 juju config alloy-vm enable-syslogreceivers=false
+```
+
+## Capture host kernel and raw journal matches
+
+The default host log path in `alloy-vm` only follows the named systemd units
+from `systemd-units`. You can extend this with:
+
+- `journal-kernel`
+- `journal-match-expressions`
+
+These options create an additional host journal source in Alloy.
+
+Behavior:
+
+- `systemd-units` logs still flow through the Juju-labeled log pipeline
+- kernel/raw host journal logs do not get `juju_*` labels
+- if there is no `send-loki-logs` relation, the broader host journal path is
+  dropped just like the existing log pipeline
+
+### `journal-kernel`
+
+Enable host kernel transport logs:
+
+```bash
+juju config alloy-vm journal-kernel=true
+```
+
+What happens:
+
+- Alloy adds `_TRANSPORT=kernel` to a broader host journal source
+- this is intended to capture kernel log traffic similar to `dmesg`
+- these entries are forwarded to Loki without Juju topology labels
+
+### `journal-match-expressions`
+
+Add raw journald match expressions as newline-separated clauses:
+
+```bash
+juju config alloy-vm journal-match-expressions=$'SYSLOG_IDENTIFIER=lxd'
+```
+
+What happens:
+
+- the expressions are passed through without validation
+- empty lines are ignored
+- invalid expressions can break the rendered Alloy config and cause config
+  validation to fail
+
+Example: capture both kernel transport logs and host LXD messages
+
+```bash
+juju config alloy-vm journal-match-expressions=$'_TRANSPORT=kernel\nSYSLOG_IDENTIFIER=lxd'
+```
+
+Example: keep unit-based logs and add kernel capture
+
+```bash
+juju config alloy-vm systemd-units='ssh.service,snap.lxd.daemon.service'
+juju config alloy-vm journal-kernel=true
+```
+
+What happens:
+
+- `ssh.service` and `snap.lxd.daemon.service` logs still keep Juju topology labels
+- kernel transport logs are collected through the separate host journal path
+- the host journal path remains unlabeled by Juju topology
+
+Example: monitor an LXD host for kernel, LXD, and audit-style host messages
+
+```bash
+juju config alloy-vm systemd-units='snap.lxd.daemon.service'
+juju config alloy-vm journal-kernel=true
+juju config alloy-vm journal-match-expressions=$'SYSLOG_IDENTIFIER=audit\nSYSLOG_IDENTIFIER=lxd'
+```
+
+What happens:
+
+- `snap.lxd.daemon.service` logs are collected through the Juju-labeled service path
+- kernel transport logs are collected through the broader host journal path
+- host messages emitted with `SYSLOG_IDENTIFIER=lxd` or `SYSLOG_IDENTIFIER=audit`
+  are collected through the broader host journal path
+- the broader host journal path does not add `juju_*` labels, so these entries
+  should be treated as host-scoped logs rather than Juju workload-scoped logs
+
+### Verification
+
+Inspect the rendered host journal blocks:
+
+```bash
+juju ssh alloy-vm/<unit> 'grep -n "loki.source.journal" -A6 /etc/alloy/config.alloy'
+```
+
+Check that `_TRANSPORT=kernel` or your raw match expression is present:
+
+```bash
+juju ssh alloy-vm/<unit> 'grep -n "_TRANSPORT=kernel\\|SYSLOG_IDENTIFIER=lxd" /etc/alloy/config.alloy'
+```
+
+Query recent logs in Loki or Grafana after triggering a known matching message:
+
+```bash
+juju ssh loki-vm/<unit> 'start=$(date -u -d "15 minutes ago" +%s%N); end=$(date -u +%s%N); curl -sG --data-urlencode "query={}" --data-urlencode limit=20 --data-urlencode start=$start --data-urlencode end=$end http://127.0.0.1:3100/loki/api/v1/query_range'
+```
+
+If you added a raw identifier match, trigger the matching host service and look for
+the expected log line content in Grafana Explore or through Loki's API.
+
+```bash
+juju ssh alloy-vm/<unit> 'journalctl -n 20 --no-pager -u snap.lxd.daemon.service'
 ```

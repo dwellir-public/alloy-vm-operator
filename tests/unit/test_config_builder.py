@@ -18,6 +18,8 @@ def _builder(**kwargs) -> ConfigBuilder:
         "remote_write_endpoints": [],
         "metrics_scrape_jobs": [],
         "systemd_units": [],
+        "journal_kernel": False,
+        "journal_match_expressions": [],
         "live_debugging": False,
         "enable_syslog_receivers": False,
         "syslog_drop_access_logs": False,
@@ -149,3 +151,65 @@ def test_syslog_rate_limit_renders_limit_stage():
     assert "    rate = 25" in rendered
     assert "    burst = 100" in rendered
     assert "    drop = true" in rendered
+
+
+def test_default_config_keeps_service_journal_path_only():
+    rendered = _builder(systemd_units=["ssh.service"]).build()
+
+    assert 'loki.source.journal "journald" {' in rendered
+    assert 'matches = "_SYSTEMD_UNIT=ssh.service"' in rendered
+    assert 'forward_to = [loki.process.juju.receiver]' in rendered
+    assert 'loki.source.journal "host_journald" {' not in rendered
+
+
+def test_journal_kernel_renders_unlabeled_host_journal_source():
+    rendered = _builder(
+        loki_endpoints=["http://10.0.0.20:3100/loki/api/v1/push"],
+        journal_kernel=True,
+    ).build()
+
+    assert 'loki.source.journal "host_journald" {' in rendered
+    assert 'matches = "_TRANSPORT=kernel"' in rendered
+    assert 'forward_to = [loki.write.main.receiver]' in rendered
+
+
+def test_journal_match_expressions_render_once_and_ignore_blank_lines():
+    rendered = _builder(
+        loki_endpoints=["http://10.0.0.20:3100/loki/api/v1/push"],
+        journal_match_expressions=["SYSLOG_IDENTIFIER=lxd", "_TRANSPORT=kernel"],
+    ).build()
+
+    assert rendered.count("SYSLOG_IDENTIFIER=lxd") == 1
+    assert rendered.count("_TRANSPORT=kernel") == 1
+    assert rendered.count('loki.source.journal "host_journald_') == 2
+
+
+def test_mixed_service_and_host_journal_sources_render_separately():
+    rendered = _builder(
+        loki_endpoints=["http://10.0.0.20:3100/loki/api/v1/push"],
+        systemd_units=["ssh.service"],
+        journal_kernel=True,
+        journal_match_expressions=["SYSLOG_IDENTIFIER=lxd"],
+    ).build()
+
+    assert 'loki.source.journal "journald" {' in rendered
+    assert 'matches = "_SYSTEMD_UNIT=ssh.service"' in rendered
+    assert 'loki.source.journal "host_journald_0" {' in rendered
+    assert 'loki.source.journal "host_journald_1" {' in rendered
+    assert 'matches = "_TRANSPORT=kernel"' in rendered
+    assert 'matches = "SYSLOG_IDENTIFIER=lxd"' in rendered
+
+
+def test_host_journal_source_drops_without_loki_relation():
+    rendered = _builder(
+        journal_kernel=True,
+        journal_match_expressions=["SYSLOG_IDENTIFIER=lxd"],
+    ).build()
+
+    assert 'loki.source.journal "host_journald_0" {' in rendered
+    assert 'loki.source.journal "host_journald_1" {' in rendered
+    assert "  forward_to = []" in rendered
+    host_section = rendered.split('loki.source.journal "host_journald_0" {', 1)[1].split(
+        'loki.process "juju" {', 1
+    )[0]
+    assert "juju_model" not in host_section

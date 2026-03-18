@@ -311,6 +311,8 @@ class AlloyCharm(ops.CharmBase):
             remote_write_endpoints=self._remote_write_endpoint_urls(),
             metrics_scrape_jobs=self._active_metrics_scrape_jobs(),
             systemd_units=self._systemd_units(),
+            journal_kernel=self._journal_kernel_enabled(),
+            journal_match_expressions=self._journal_match_expressions(),
             live_debugging=self._live_debugging_enabled(),
             enable_syslog_receivers=self._syslog_receivers_enabled(),
             syslog_drop_access_logs=self._syslog_drop_access_logs(),
@@ -400,6 +402,17 @@ class AlloyCharm(ops.CharmBase):
     def _syslog_receivers_enabled(self) -> bool:
         """Return True when syslog receiver listeners should be enabled."""
         return bool(self.config.get("enable-syslogreceivers", False))
+
+    def _journal_kernel_enabled(self) -> bool:
+        """Return True when host kernel journal messages should be collected."""
+        return bool(self.config.get("journal-kernel", False))
+
+    def _journal_match_expressions(self) -> list[str]:
+        """Return raw additional journald match expressions from charm config."""
+        raw = str(self.config.get("journal-match-expressions", "")).strip()
+        if not raw:
+            return []
+        return [line.strip() for line in raw.splitlines() if line.strip()]
 
     def _syslog_drop_access_logs(self) -> bool:
         """Return True when common remote syslog access logs should be dropped."""
