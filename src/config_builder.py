@@ -41,6 +41,7 @@ class MetricsScrapeJob:
     scheme: str = "http"
     scrape_interval: str = ""
     scrape_timeout: str = ""
+    tls_config: dict[str, str | bool] = field(default_factory=dict)
 
 
 class ConfigBuilder:
@@ -235,9 +236,23 @@ class ConfigBuilder:
             lines.append(f"  scrape_interval = {json.dumps(scrape_job.scrape_interval)}")
         if scrape_job.scrape_timeout:
             lines.append(f"  scrape_timeout = {json.dumps(scrape_job.scrape_timeout)}")
+        if scrape_job.tls_config:
+            lines.extend(self._render_tls_config(scrape_job.tls_config))
         lines.append(f"  forward_to = {self._metrics_forward_to()}")
         lines.append("}")
         return "\n".join(lines)
+
+    def _render_tls_config(self, tls_config: dict[str, str | bool]) -> list[str]:
+        lines = ["  tls_config {"]
+        for key in sorted(tls_config):
+            value = tls_config[key]
+            if isinstance(value, bool):
+                rendered_value = "true" if value else "false"
+            else:
+                rendered_value = json.dumps(value)
+            lines.append(f"    {self._render_key(key)} = {rendered_value}")
+        lines.append("  }")
+        return lines
 
     def _render_targets(self, targets: list[ScrapeTarget]) -> list[str]:
         rendered: list[str] = []

@@ -3,6 +3,7 @@
 #
 # Learn more about testing at: https://juju.is/docs/sdk/testing
 
+import json
 import socket
 from dataclasses import replace
 
@@ -585,6 +586,70 @@ def test_metrics_remote_write_renders_remote_scrape_jobs(monkeypatch):
     assert 'prometheus.scrape "juju_model_dummychain" {' in rendered
     assert '__address__ = "10.0.0.20:9100"' in rendered
     assert 'juju_unit = "dummychain/0"' in rendered
+    assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
+
+
+def test_metrics_remote_write_renders_tls_scrape_jobs(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    cert_pem = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"
+    key_pem = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.MetricsEndpointConsumer.jobs",
+        lambda _self: [
+            {
+                "job_name": "juju_model_lxd",
+                "metrics_path": "/1.0/metrics",
+                "scheme": "https",
+                "static_configs": [
+                    {
+                        "targets": ["[2001:db8::1]:9100"],
+                        "labels": {"juju_unit": "lxd/0"},
+                    }
+                ],
+                "tls_config": {
+                    "insecure_skip_verify": True,
+                    "cert_file": cert_pem,
+                    "key_file": key_pem,
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: [{"url": "http://10.0.0.10:9009/api/v1/push"}]),
+    )
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert 'prometheus.scrape "juju_model_lxd" {' in rendered
+    assert 'scheme = "https"' in rendered
+    assert "  tls_config {" in rendered
+    assert '    insecure_skip_verify = true' in rendered
+    assert f"    cert_pem = {json.dumps(cert_pem)}" in rendered
+    assert f"    key_pem = {json.dumps(key_pem)}" in rendered
     assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
 
 

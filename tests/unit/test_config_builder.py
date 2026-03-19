@@ -1,6 +1,8 @@
 # Copyright 2026 Erik Lönroth
 # See LICENSE file for licensing details.
 
+import json
+
 from config_builder import ConfigBuilder, MetricsScrapeJob, ScrapeTarget
 
 TOPOLOGY = {
@@ -88,6 +90,34 @@ def test_remote_scrape_jobs_are_rendered_with_topology_labels():
     assert 'job_name = "juju_test_model_dummychain_prometheus_scrape"' in rendered
     assert 'scrape_interval = "30s"' in rendered
     assert 'scrape_timeout = "10s"' in rendered
+
+
+def test_remote_scrape_jobs_render_tls_config():
+    cert_pem = "-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\\n"
+    key_pem = "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n"
+    rendered = _builder(
+        remote_write_endpoints=["http://10.0.0.10:9009/api/v1/push"],
+        metrics_scrape_jobs=[
+            MetricsScrapeJob(
+                job_name="juju_test_model_lxd_prometheus_scrape",
+                metrics_path="/1.0/metrics",
+                scheme="https",
+                tls_config={
+                    "insecure_skip_verify": True,
+                    "cert_pem": cert_pem,
+                    "key_pem": key_pem,
+                },
+                targets=[ScrapeTarget(address="[2001:db8::1]:9100")],
+            )
+        ],
+    ).build()
+
+    assert 'prometheus.scrape "juju_test_model_lxd_prometheus_scrape" {' in rendered
+    assert 'scheme = "https"' in rendered
+    assert "  tls_config {" in rendered
+    assert '    insecure_skip_verify = true' in rendered
+    assert f"    cert_pem = {json.dumps(cert_pem)}" in rendered
+    assert f"    key_pem = {json.dumps(key_pem)}" in rendered
 
 
 def test_syslog_receivers_without_loki_drop_remote_logs():

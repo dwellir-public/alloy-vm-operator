@@ -546,6 +546,7 @@ class AlloyCharm(ops.CharmBase):
             "scrape_timeout",
             "static_configs",
             "relabel_configs",
+            "tls_config",
         }
         if unsupported_job_keys:
             logger.warning(
@@ -578,7 +579,57 @@ class AlloyCharm(ops.CharmBase):
             scheme=str(job.get("scheme", "http")),
             scrape_interval=str(job.get("scrape_interval", "")),
             scrape_timeout=str(job.get("scrape_timeout", "")),
+            tls_config=self._translate_tls_config(job),
         )
+
+    def _translate_tls_config(
+        self,
+        job: Mapping[str, object],
+    ) -> dict[str, str | bool]:
+        raw_tls_config = job.get("tls_config", {})
+        if raw_tls_config in ({}, None):
+            return {}
+        if not isinstance(raw_tls_config, Mapping):
+            logger.warning(
+                "Skipping scrape job %s due to invalid tls_config: %r",
+                job.get("job_name", "<unnamed>"),
+                raw_tls_config,
+            )
+            return {}
+
+        translated: dict[str, str | bool] = {}
+        for raw_key in (
+            "insecure_skip_verify",
+            "server_name",
+            "ca_file",
+            "cert_file",
+            "key_file",
+        ):
+            value = raw_tls_config.get(raw_key)
+            if value in ("", None):
+                continue
+            if raw_key == "insecure_skip_verify":
+                translated[raw_key] = bool(value)
+                continue
+            if not isinstance(value, str):
+                logger.warning(
+                    "Skipping unsupported tls_config field %s on scrape job %s",
+                    raw_key,
+                    job.get("job_name", "<unnamed>"),
+                )
+                continue
+            translated[self._translate_tls_config_key(raw_key, value)] = value
+        return translated
+
+    @staticmethod
+    def _translate_tls_config_key(key: str, value: str) -> str:
+        if key == "ca_file" and "-----BEGIN" in value:
+            return "ca_pem"
+        if key == "cert_file" and "-----BEGIN" in value:
+            return "cert_pem"
+        if key == "key_file" and "-----BEGIN" in value:
+            return "key_pem"
+        return key
 
     def _translate_static_configs(
         self,
