@@ -144,6 +144,10 @@ def test_syslog_receivers_with_loki_use_remote_processor():
     assert "  forward_to = [loki.write.main.receiver]" in rendered
     assert 'loki.source.syslog "receiver" {' in rendered
     assert "  forward_to = [loki.process.remote_syslog.receiver]" in rendered
+    assert 'target_label  = "syslog_app_name"' in rendered
+    assert 'target_label  = "syslog_facility"' in rendered
+    assert 'target_label  = "syslog_proc_id"' in rendered
+    assert 'target_label  = "connection_hostname"' in rendered
 
 
 def test_syslog_drop_access_logs_renders_drop_stage():
@@ -186,10 +190,26 @@ def test_syslog_rate_limit_renders_limit_stage():
 def test_default_config_keeps_service_journal_path_only():
     rendered = _builder(systemd_units=["ssh.service"]).build()
 
+    assert 'loki.relabel "journal" {' in rendered
     assert 'loki.source.journal "journald" {' in rendered
     assert 'matches = "_SYSTEMD_UNIT=ssh.service"' in rendered
+    assert 'relabel_rules = loki.relabel.journal.rules' in rendered
+    assert 'labels = {log_source = "journal", systemd_unit = "ssh.service"}' in rendered
     assert 'forward_to = [loki.process.juju.receiver]' in rendered
     assert 'loki.source.journal "host_journald" {' not in rendered
+
+
+def test_journal_relabel_preserves_unit_identifier_and_priority_labels():
+    rendered = _builder(systemd_units=["ssh.service"]).build()
+
+    assert 'source_labels = ["__journal__systemd_unit"]' in rendered
+    assert 'target_label  = "systemd_unit"' in rendered
+    assert 'source_labels = ["__journal_syslog_identifier"]' in rendered
+    assert 'target_label  = "syslog_identifier"' in rendered
+    assert 'source_labels = ["__journal_priority_keyword"]' in rendered
+    assert 'target_label  = "level"' in rendered
+    assert 'source_labels = ["__journal_priority"]' in rendered
+    assert 'target_label  = "severity"' in rendered
 
 
 def test_journal_kernel_renders_unlabeled_host_journal_source():
@@ -200,6 +220,8 @@ def test_journal_kernel_renders_unlabeled_host_journal_source():
 
     assert 'loki.source.journal "host_journald" {' in rendered
     assert 'matches = "_TRANSPORT=kernel"' in rendered
+    assert 'relabel_rules = loki.relabel.journal.rules' in rendered
+    assert 'labels = {log_source = "journal"}' in rendered
     assert 'forward_to = [loki.write.main.receiver]' in rendered
 
 

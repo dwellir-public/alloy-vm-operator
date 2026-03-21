@@ -115,6 +115,8 @@ class ConfigBuilder:
             blocks.extend([self._render_live_debugging(), ""])
         if self._has_log_pipeline():
             blocks.extend(["// LOGS -> LOKI (Juju topology labels)", ""])
+        if self._has_journal_sources():
+            blocks.extend([self._render_journal_relabel(), ""])
         for block in self._render_service_journal_sources():
             blocks.extend([block, ""])
         for block in self._render_host_journal_sources():
@@ -291,6 +293,8 @@ class ConfigBuilder:
                     [
                         f'loki.source.journal "{component_name}" {{',
                         f'  matches = "{self._format_unit_match(unit)}"',
+                        '  relabel_rules = loki.relabel.journal.rules',
+                        f'  labels = {{log_source = "journal", systemd_unit = "{unit}"}}',
                         "  forward_to = [loki.process.juju.receiver]",
                         "}",
                     ]
@@ -315,12 +319,43 @@ class ConfigBuilder:
                     [
                         f'loki.source.journal "{component_name}" {{',
                         f'  matches = "{match}"',
+                        '  relabel_rules = loki.relabel.journal.rules',
+                        '  labels = {log_source = "journal"}',
                         forward_to,
                         "}",
                     ]
                 )
             )
         return blocks
+
+    def _render_journal_relabel(self) -> str:
+        return "\n".join(
+            [
+                'loki.relabel "journal" {',
+                "  forward_to = []",
+                "",
+                "  rule {",
+                '    source_labels = ["__journal__systemd_unit"]',
+                '    target_label  = "systemd_unit"',
+                "  }",
+                "",
+                "  rule {",
+                '    source_labels = ["__journal_syslog_identifier"]',
+                '    target_label  = "syslog_identifier"',
+                "  }",
+                "",
+                "  rule {",
+                '    source_labels = ["__journal_priority_keyword"]',
+                '    target_label  = "level"',
+                "  }",
+                "",
+                "  rule {",
+                '    source_labels = ["__journal_priority"]',
+                '    target_label  = "severity"',
+                "  }",
+                "}",
+            ]
+        )
 
     def _render_syslog_relabel(self) -> str:
         return "\n".join(
@@ -336,6 +371,26 @@ class ConfigBuilder:
                 "  rule {",
                 '    source_labels = ["__syslog_message_hostname"]',
                 '    target_label  = "syslog_hostname"',
+                "  }",
+                "",
+                "  rule {",
+                '    source_labels = ["__syslog_connection_hostname"]',
+                '    target_label  = "connection_hostname"',
+                "  }",
+                "",
+                "  rule {",
+                '    source_labels = ["__syslog_message_app_name"]',
+                '    target_label  = "syslog_app_name"',
+                "  }",
+                "",
+                "  rule {",
+                '    source_labels = ["__syslog_message_facility"]',
+                '    target_label  = "syslog_facility"',
+                "  }",
+                "",
+                "  rule {",
+                '    source_labels = ["__syslog_message_proc_id"]',
+                '    target_label  = "syslog_proc_id"',
                 "  }",
                 "",
                 "  rule {",
@@ -476,6 +531,9 @@ class ConfigBuilder:
 
     def _has_host_journal_source(self) -> bool:
         return bool(self._host_journal_matches())
+
+    def _has_journal_sources(self) -> bool:
+        return bool(self._systemd_units or self._has_host_journal_source())
 
     def _has_log_pipeline(self) -> bool:
         return bool(
