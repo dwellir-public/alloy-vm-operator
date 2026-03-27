@@ -3,6 +3,7 @@
 # See LICENSE file for licensing details.
 """Charm the application."""
 
+import json
 import logging
 import socket
 import subprocess
@@ -29,6 +30,8 @@ from config_builder import (
 logger = logging.getLogger(__name__)
 
 SYSLOG_RELATION_NAME = "syslog-receiver"
+METRICS_RELATION_NAME = "metrics-endpoint"
+METRICS_JOB_NAME_FIELD = "metrics_job_name"
 SYSLOG_RECEIVER_PORT = "1514"
 SYSLOG_RECEIVER_PROTOCOLS = "tcp,udp"
 SYSLOG_RECOMMENDED_PROTOCOL = "tcp"
@@ -573,7 +576,7 @@ class AlloyCharm(ops.CharmBase):
             return None
 
         return MetricsScrapeJob(
-            job_name=str(job.get("job_name", "metrics-endpoint")),
+            job_name=self._metrics_job_name(job),
             targets=scrape_targets,
             metrics_path=str(job.get("metrics_path", "/metrics")),
             scheme=str(job.get("scheme", "http")),
@@ -581,6 +584,59 @@ class AlloyCharm(ops.CharmBase):
             scrape_timeout=str(job.get("scrape_timeout", "")),
             tls_config=self._translate_tls_config(job),
         )
+
+    def _metrics_job_name(self, job: Mapping[str, object]) -> str:
+        """Return the rendered job name, honoring any provider-supplied unit override."""
+        labels = self._scrape_job_labels(job)
+        override = self._metrics_job_name_overrides().get(
+            (
+                labels.get("juju_model_uuid", ""),
+                labels.get("juju_application", ""),
+                labels.get("juju_unit", ""),
+            )
+        )
+        if override:
+            return override
+        return str(job.get("job_name", "metrics-endpoint"))
+
+    def _metrics_job_name_overrides(self) -> dict[tuple[str, str, str], str]:
+        """Return optional per-unit job-name overrides published by remote scrape providers."""
+        overrides: dict[tuple[str, str, str], str] = {}
+        for relation in self.model.relations.get(METRICS_RELATION_NAME, []):
+            remote_app = relation.app
+            if remote_app is None:
+                continue
+            try:
+                scrape_metadata = json.loads(relation.data[remote_app].get("scrape_metadata", "{}"))
+            except json.JSONDecodeError:
+                continue
+            model_uuid = str(scrape_metadata.get("model_uuid", "")).strip()
+            application = str(scrape_metadata.get("application", "")).strip()
+            if not (model_uuid and application):
+                continue
+            for unit in relation.units:
+                unit_data = relation.data[unit]
+                override = unit_data.get(METRICS_JOB_NAME_FIELD, "").strip()
+                unit_name = (
+                    unit_data.get("prometheus_scrape_unit_name", "").strip() or unit.name
+                )
+                if override and unit_name:
+                    overrides[(model_uuid, application, unit_name)] = override
+        return overrides
+
+    @staticmethod
+    def _scrape_job_labels(job: Mapping[str, object]) -> dict[str, str]:
+        """Return the first static_config label mapping from a translated scrape job."""
+        static_configs = job.get("static_configs", [])
+        if not isinstance(static_configs, list) or not static_configs:
+            return {}
+        first_static_config = static_configs[0]
+        if not isinstance(first_static_config, Mapping):
+            return {}
+        labels = first_static_config.get("labels", {})
+        if not isinstance(labels, Mapping):
+            return {}
+        return {str(key): str(value) for key, value in labels.items()}
 
     def _translate_tls_config(
         self,

@@ -589,6 +589,132 @@ def test_metrics_remote_write_renders_remote_scrape_jobs(monkeypatch):
     assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
 
 
+def test_metrics_remote_write_honors_provider_job_name_override(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.MetricsEndpointConsumer.jobs",
+        lambda _self: [
+            {
+                "job_name": "juju_lxd_hosts_generated_lxd-0",
+                "metrics_path": "/1.0/metrics",
+                "scheme": "https",
+                "static_configs": [
+                    {
+                        "targets": ["10.0.0.20:8444"],
+                        "labels": {
+                            "juju_model_uuid": "00000000-0000-4000-8000-000000000002",
+                            "juju_application": "lxd-host",
+                            "juju_unit": "lxd-host/0",
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "charm.AlloyCharm._metrics_job_name_overrides",
+        lambda _self: {
+            (
+                "00000000-0000-4000-8000-000000000002",
+                "lxd-host",
+                "lxd-host/0",
+            ): "lxd-node1"
+        },
+    )
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: [{"url": "http://10.0.0.10:9009/api/v1/push"}]),
+    )
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert 'prometheus.scrape "lxd_node1" {' in rendered
+    assert 'job_name = "lxd-node1"' in rendered
+    assert 'job_name = "juju_lxd_hosts_generated_lxd-0"' not in rendered
+    assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
+
+
+def test_metrics_remote_write_keeps_generated_job_name_without_override(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.MetricsEndpointConsumer.jobs",
+        lambda _self: [
+            {
+                "job_name": "juju_other_model_generated_service-0",
+                "metrics_path": "/metrics",
+                "scheme": "http",
+                "static_configs": [
+                    {
+                        "targets": ["10.0.0.21:9100"],
+                        "labels": {
+                            "juju_model_uuid": "00000000-0000-4000-8000-000000000003",
+                            "juju_application": "other-service",
+                            "juju_unit": "other-service/0",
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr("charm.AlloyCharm._metrics_job_name_overrides", lambda _self: {})
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: [{"url": "http://10.0.0.10:9009/api/v1/push"}]),
+    )
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert 'prometheus.scrape "juju_other_model_generated_service_0" {' in rendered
+    assert 'job_name = "juju_other_model_generated_service-0"' in rendered
+    assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
+
+
 def test_metrics_remote_write_renders_tls_scrape_jobs(monkeypatch):
     ctx = testing.Context(AlloyCharm)
     seen = {}
