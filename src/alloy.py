@@ -118,8 +118,12 @@ def stop() -> None:
 
 
 def restart() -> None:
-    """Restart the workload."""
-    _systemctl("restart", "alloy")
+    """Restart the workload, recovering from systemd start-rate limiting if needed."""
+    try:
+        _systemctl("restart", "alloy")
+    except subprocess.CalledProcessError:
+        _systemctl("reset-failed", "alloy")
+        _systemctl("start", "alloy")
     _wait_for_active("alloy")
 
 

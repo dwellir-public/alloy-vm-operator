@@ -195,6 +195,10 @@ class AlloyCharm(ops.CharmBase):
         desired_custom_args = self._desired_custom_args()
         live_debugging = self._live_debugging_enabled()
         syslog_receivers_enabled = self._syslog_receivers_enabled()
+        restart_required = (
+            desired_custom_args != self._stored.last_custom_args
+            or live_debugging != self._stored.last_live_debugging
+        )
         if not config_text:
             return True
         if (
@@ -228,11 +232,12 @@ class AlloyCharm(ops.CharmBase):
         self._stored.last_live_debugging = live_debugging
         self._stored.last_syslog_receivers_enabled = syslog_receivers_enabled
         try:
-            # A single restart is sufficient to apply the generated config.
-            # Chaining reload after restart can trip systemd start limits.
-            alloy.restart()
+            if alloy.is_active() and not restart_required:
+                alloy.reload()
+            else:
+                alloy.restart()
         except subprocess.CalledProcessError as exc:
-            logger.warning("Failed to restart Alloy after config update: %s", exc)
+            logger.warning("Failed to apply Alloy config update: %s", exc)
             return False
         return True
 

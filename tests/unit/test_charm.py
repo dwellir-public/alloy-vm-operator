@@ -131,6 +131,37 @@ def test_live_debugging_disable_restores_previous_args(monkeypatch):
     assert written_args[-1] == "--server.http.listen-addr=0.0.0.0:6987"
 
 
+def test_config_changed_reloads_active_service_when_runtime_args_unchanged(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    reloaded: list[str] = []
+    restarted: list[str] = []
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.is_active", lambda: True)
+    monkeypatch.setattr("charm.alloy.reload", lambda: reloaded.append("reload"))
+    monkeypatch.setattr("charm.alloy.restart", lambda: restarted.append("restart"))
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.write_config_text", lambda *_, **__: None)
+
+    first = {
+        "config-override": "logging { level = \"warn\" }\n",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "log-level": "info",
+    }
+    second = {**first, "config-override": "logging { level = \"info\" }\n"}
+
+    state = testing.State(config=first)
+    state = ctx.run(ctx.on.config_changed(), state)
+    state = ctx.run(ctx.on.config_changed(), replace(state, config=second))
+
+    assert reloaded == ["reload"]
+    assert restarted == ["restart"]
+
+
 def test_syslog_receivers_enabled_renders_tcp_udp_blocks(monkeypatch):
     ctx = testing.Context(AlloyCharm)
     seen = {}
