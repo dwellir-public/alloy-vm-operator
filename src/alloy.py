@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -18,10 +19,11 @@ import time
 from pathlib import Path
 from typing import Iterable
 
-import grp
-import pwd
-
-from config_builder import DEFAULT_CONFIG_BACKUP_PATH, DEFAULT_CONFIG_PATH, DEFAULT_PACKAGE_CONFIG_BACKUP_PATH
+from config_builder import (
+    DEFAULT_CONFIG_BACKUP_PATH,
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_PACKAGE_CONFIG_BACKUP_PATH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +101,7 @@ def install() -> None:
     _run_shell(
         f"wget -q -O - {GRAFANA_GPG_KEY_URL} | gpg --dearmor > /etc/apt/keyrings/grafana.gpg"
     )
-    _run_shell(
-        f'echo "{GRAFANA_APT_SOURCE}" | tee /etc/apt/sources.list.d/grafana.list'
-    )
+    _run_shell(f'echo "{GRAFANA_APT_SOURCE}" | tee /etc/apt/sources.list.d/grafana.list')
     _run(["apt-get", "update"])
     _run(["apt-get", "install", "-y", "alloy"])
 
@@ -167,9 +167,7 @@ def is_active(*, timeout: int = DEFAULT_STATUS_TIMEOUT) -> bool:
         return False
 
 
-def read_custom_args(
-    *, defaults_path: Path = Path(DEFAULT_SYSTEMD_DEFAULTS_PATH)
-) -> str | None:
+def read_custom_args(*, defaults_path: Path = Path(DEFAULT_SYSTEMD_DEFAULTS_PATH)) -> str | None:
     """Read CUSTOM_ARGS from /etc/default/alloy."""
     try:
         content = defaults_path.read_text(encoding="utf-8")

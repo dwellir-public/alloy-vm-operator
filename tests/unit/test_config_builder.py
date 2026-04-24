@@ -47,9 +47,7 @@ def test_local_metrics_drop_without_remote_write():
 
 
 def test_local_metrics_forward_to_remote_write_when_endpoint_exists():
-    rendered = _builder(
-        remote_write_endpoints=["http://10.0.0.10:9009/api/v1/push"]
-    ).build()
+    rendered = _builder(remote_write_endpoints=["http://10.0.0.10:9009/api/v1/push"]).build()
 
     assert 'prometheus.remote_write "metrics" {' in rendered
     assert 'url = "http://10.0.0.10:9009/api/v1/push"' in rendered
@@ -115,7 +113,7 @@ def test_remote_scrape_jobs_render_tls_config():
     assert 'prometheus.scrape "juju_test_model_lxd_prometheus_scrape" {' in rendered
     assert 'scheme = "https"' in rendered
     assert "  tls_config {" in rendered
-    assert '    insecure_skip_verify = true' in rendered
+    assert "    insecure_skip_verify = true" in rendered
     assert f"    cert_pem = {json.dumps(cert_pem)}" in rendered
     assert f"    key_pem = {json.dumps(key_pem)}" in rendered
 
@@ -159,7 +157,7 @@ def test_syslog_drop_access_logs_renders_drop_stage():
 
     assert 'loki.process "remote_syslog" {' in rendered
     assert "  stage.drop {" in rendered
-    assert '(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)' in rendered
+    assert "(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)" in rendered
 
 
 def test_syslog_custom_drop_expressions_render_all_entries():
@@ -193,9 +191,9 @@ def test_default_config_keeps_service_journal_path_only():
     assert 'loki.relabel "journal" {' in rendered
     assert 'loki.source.journal "journald" {' in rendered
     assert 'matches = "_SYSTEMD_UNIT=ssh.service"' in rendered
-    assert 'relabel_rules = loki.relabel.journal.rules' in rendered
+    assert "relabel_rules = loki.relabel.journal.rules" in rendered
     assert 'labels = {log_source = "journal", systemd_unit = "ssh.service"}' in rendered
-    assert 'forward_to = [loki.process.juju.receiver]' in rendered
+    assert "forward_to = [loki.process.juju.receiver]" in rendered
     assert 'loki.source.journal "host_journald" {' not in rendered
 
 
@@ -220,9 +218,9 @@ def test_journal_kernel_renders_unlabeled_host_journal_source():
 
     assert 'loki.source.journal "host_journald" {' in rendered
     assert 'matches = "_TRANSPORT=kernel"' in rendered
-    assert 'relabel_rules = loki.relabel.journal.rules' in rendered
+    assert "relabel_rules = loki.relabel.journal.rules" in rendered
     assert 'labels = {log_source = "journal"}' in rendered
-    assert 'forward_to = [loki.write.main.receiver]' in rendered
+    assert "forward_to = [loki.write.main.receiver]" in rendered
 
 
 def test_journal_match_expressions_render_once_and_ignore_blank_lines():

@@ -42,7 +42,7 @@ def test_config_drift_sets_maintenance(monkeypatch, tmp_path):
     monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
 
     config = {
-        "config-override": "logging { level = \"warn\" }\n",
+        "config-override": 'logging { level = "warn" }\n',
         "custom_args": "--server.http.listen-addr=0.0.0.0:6987",
         "alloy-livedebugging": False,
         "enable-syslogreceivers": False,
@@ -146,13 +146,13 @@ def test_config_changed_reloads_active_service_when_runtime_args_unchanged(monke
     monkeypatch.setattr("charm.alloy.write_config_text", lambda *_, **__: None)
 
     first = {
-        "config-override": "logging { level = \"warn\" }\n",
+        "config-override": 'logging { level = "warn" }\n',
         "custom_args": DEFAULT_ARGS,
         "alloy-livedebugging": False,
         "enable-syslogreceivers": False,
         "log-level": "info",
     }
-    second = {**first, "config-override": "logging { level = \"info\" }\n"}
+    second = {**first, "config-override": 'logging { level = "info" }\n'}
 
     state = testing.State(config=first)
     state = ctx.run(ctx.on.config_changed(), state)
@@ -241,7 +241,7 @@ def test_syslog_receivers_drop_logs_without_loki_endpoints(monkeypatch):
     assert 'loki.source.syslog "receiver" {' in rendered
     assert "  forward_to = []" in rendered
     assert 'loki.process "remote_syslog" {' not in rendered
-    assert 'forward_to = [loki.process.juju.receiver]' not in rendered
+    assert "forward_to = [loki.process.juju.receiver]" not in rendered
 
 
 def test_syslog_receivers_with_loki_render_remote_processor(monkeypatch):
@@ -368,7 +368,7 @@ def test_journal_kernel_renders_host_journal_source(monkeypatch):
     rendered = seen["config"]
     assert 'loki.source.journal "host_journald" {' in rendered
     assert 'matches = "_TRANSPORT=kernel"' in rendered
-    assert 'forward_to = [loki.write.main.receiver]' in rendered
+    assert "forward_to = [loki.write.main.receiver]" in rendered
 
 
 def test_journal_match_expressions_render_without_juju_topology(monkeypatch):
@@ -420,7 +420,10 @@ def test_syslog_receiver_relation_publishes_ready_receiver(monkeypatch):
         interface="syslog",
         remote_app_name="haproxy-dataplane-api",
     )
-    monkeypatch.setattr("charm.AlloyCharm._loki_endpoint_urls", lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"])
+    monkeypatch.setattr(
+        "charm.AlloyCharm._loki_endpoint_urls",
+        lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"],
+    )
     monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_ip", lambda *_: "10.0.0.10")
 
     config = {
@@ -493,7 +496,10 @@ def test_syslog_receiver_relation_clears_connection_details_when_disabled(monkey
         local_app_data={"address": "stale", "port": "1514"},
         local_unit_data={"address": "stale", "port": "1514"},
     )
-    monkeypatch.setattr("charm.AlloyCharm._loki_endpoint_urls", lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"])
+    monkeypatch.setattr(
+        "charm.AlloyCharm._loki_endpoint_urls",
+        lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"],
+    )
 
     config = {
         "config-override": "",
@@ -533,7 +539,10 @@ def test_config_changed_refreshes_syslog_receiver_relation(monkeypatch):
     monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
     monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
     monkeypatch.setattr("charm.alloy.write_config_text", lambda *_, **__: None)
-    monkeypatch.setattr("charm.AlloyCharm._loki_endpoint_urls", lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"])
+    monkeypatch.setattr(
+        "charm.AlloyCharm._loki_endpoint_urls",
+        lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"],
+    )
     monkeypatch.setattr("charm.AlloyCharm._syslog_receiver_ip", lambda *_: "10.0.0.10")
 
     config = {
@@ -804,7 +813,7 @@ def test_metrics_remote_write_renders_tls_scrape_jobs(monkeypatch):
     assert 'prometheus.scrape "juju_model_lxd" {' in rendered
     assert 'scheme = "https"' in rendered
     assert "  tls_config {" in rendered
-    assert '    insecure_skip_verify = true' in rendered
+    assert "    insecure_skip_verify = true" in rendered
     assert f"    cert_pem = {json.dumps(cert_pem)}" in rendered
     assert f"    key_pem = {json.dumps(key_pem)}" in rendered
     assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")

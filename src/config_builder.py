@@ -163,7 +163,7 @@ class ConfigBuilder:
                     [
                         "  rule {",
                         f'    target_label = "{key}"',
-                        f'    replacement  = {json.dumps(value)}',
+                        f"    replacement  = {json.dumps(value)}",
                         "  }",
                         "",
                     ]
@@ -293,7 +293,7 @@ class ConfigBuilder:
                     [
                         f'loki.source.journal "{component_name}" {{',
                         f'  matches = "{self._format_unit_match(unit)}"',
-                        '  relabel_rules = loki.relabel.journal.rules',
+                        "  relabel_rules = loki.relabel.journal.rules",
                         f'  labels = {{log_source = "journal", systemd_unit = "{unit}"}}',
                         "  forward_to = [loki.process.juju.receiver]",
                         "}",
@@ -319,7 +319,7 @@ class ConfigBuilder:
                     [
                         f'loki.source.journal "{component_name}" {{',
                         f'  matches = "{match}"',
-                        '  relabel_rules = loki.relabel.journal.rules',
+                        "  relabel_rules = loki.relabel.journal.rules",
                         '  labels = {log_source = "journal"}',
                         forward_to,
                         "}",
@@ -421,7 +421,7 @@ class ConfigBuilder:
                 "",
                 "  listener {",
                 '    address = ":1514"',
-                "    labels  = {component = \"loki.source.syslog\", protocol = \"tcp\", "
+                '    labels  = {component = "loki.source.syslog", protocol = "tcp", '
                 f'log_source = "remote_syslog", receiver_hostname = "{receiver_hostname}", '
                 f'receiver_ip = "{receiver_ip}"' + "}",
                 "  }",
@@ -429,7 +429,7 @@ class ConfigBuilder:
                 "  listener {",
                 '    address  = ":1514"',
                 '    protocol = "udp"',
-                "    labels   = {component = \"loki.source.syslog\", protocol = \"udp\", "
+                '    labels   = {component = "loki.source.syslog", protocol = "udp", '
                 f'log_source = "remote_syslog", receiver_hostname = "{receiver_hostname}", '
                 f'receiver_ip = "{receiver_ip}"' + "}",
                 "  }",
@@ -537,9 +537,7 @@ class ConfigBuilder:
 
     def _has_log_pipeline(self) -> bool:
         return bool(
-            self._systemd_units
-            or self._has_host_journal_source()
-            or self._enable_syslog_receivers
+            self._systemd_units or self._has_host_journal_source() or self._enable_syslog_receivers
         )
 
     def _host_journal_matches(self) -> list[str]:

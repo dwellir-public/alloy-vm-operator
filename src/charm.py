@@ -133,9 +133,7 @@ class AlloyCharm(ops.CharmBase):
             self._refresh_syslog_receiver_relations()
             self.unit.status = self._post_config_status("Alloy config updated and valid")
         else:
-            self.unit.status = ops.MaintenanceStatus(
-                "Invalid Alloy config. No changes applied."
-            )
+            self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
 
     def _on_upgrade_charm(self, event):
         """Handle charm upgrade without restarting or rewriting configuration."""
@@ -148,9 +146,7 @@ class AlloyCharm(ops.CharmBase):
             self._refresh_syslog_receiver_relations()
             self.unit.status = self._post_config_status("Alloy config updated and valid")
         else:
-            self.unit.status = ops.MaintenanceStatus(
-                "Invalid Alloy config. No changes applied."
-            )
+            self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
 
     def _on_metrics_relation_changed(self, event):
         """Update config when metrics scrape or remote write endpoints change."""
@@ -158,9 +154,7 @@ class AlloyCharm(ops.CharmBase):
         if self._configure():
             self.unit.status = self._post_config_status("Alloy config updated and valid")
         else:
-            self.unit.status = ops.MaintenanceStatus(
-                "Invalid Alloy config. No changes applied."
-            )
+            self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
 
     def _on_update_status(self, event):
         """Handle periodic status updates (detect drift and workload health)."""
@@ -249,9 +243,7 @@ class AlloyCharm(ops.CharmBase):
         drifted = self._has_config_drift()
         if drifted != self._stored.config_drifted:
             if drifted:
-                logger.warning(
-                    "Detected manual Alloy config change at %s", DEFAULT_CONFIG_PATH
-                )
+                logger.warning("Detected manual Alloy config change at %s", DEFAULT_CONFIG_PATH)
             else:
                 logger.info("Alloy config drift cleared.")
         self._stored.config_drifted = drifted
@@ -612,7 +604,9 @@ class AlloyCharm(ops.CharmBase):
             if remote_app is None:
                 continue
             try:
-                scrape_metadata = json.loads(relation.data[remote_app].get("scrape_metadata", "{}"))
+                scrape_metadata = json.loads(
+                    relation.data[remote_app].get("scrape_metadata", "{}")
+                )
             except json.JSONDecodeError:
                 continue
             model_uuid = str(scrape_metadata.get("model_uuid", "")).strip()
@@ -622,9 +616,7 @@ class AlloyCharm(ops.CharmBase):
             for unit in relation.units:
                 unit_data = relation.data[unit]
                 override = unit_data.get(METRICS_JOB_NAME_FIELD, "").strip()
-                unit_name = (
-                    unit_data.get("prometheus_scrape_unit_name", "").strip() or unit.name
-                )
+                unit_name = unit_data.get("prometheus_scrape_unit_name", "").strip() or unit.name
                 if override and unit_name:
                     overrides[(model_uuid, application, unit_name)] = override
         return overrides
