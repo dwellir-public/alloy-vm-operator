@@ -14,6 +14,9 @@ Alloy now supports:
 - forwarding metrics upstream over `send-remote-write` (`prometheus_remote_write`)
 
 The intended release-1 operating model is one Alloy unit doing the scraping and forwarding work.
+For the shared observability deployment, Alloy forwards into one shared Mimir
+metrics store. Tenant-aware relation metadata is not required or published by
+`alloy-vm`; separation is done through metric labels such as Juju topology.
 
 ### No-upstream behavior
 
@@ -41,11 +44,22 @@ This means:
 
 ### Example relation to Mimir
 
-Relate Alloy to a deployed `mimir-vm` application:
+Relate Alloy to a deployed shared metrics endpoint such as `mimir-vm` directly:
 
 ```bash
 juju relate alloy-vm:send-remote-write mimir-vm:receive-remote-write
 ```
+
+If `mimir-gateway-vm` is deployed as the stable ingress/load balancer in front
+of Mimir, relate Alloy to the gateway instead:
+
+```bash
+juju relate alloy-vm:send-remote-write mimir-gateway-vm:receive-remote-write
+```
+
+In both cases, Alloy consumes a plain `prometheus_remote_write` URL contract.
+It does not require `tenant-id`, `X-Scope-OrgID`, or tenant-specific path
+handling.
 
 Verify the rendered remote write config on the Alloy unit:
 
