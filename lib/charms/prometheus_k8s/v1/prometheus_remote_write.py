@@ -47,7 +47,7 @@ LIBAPI = 1
 
 # Increment this PATCH version before using `charmcraft publish-lib` or reset
 # to 0 if you are raising the major API version
-LIBPATCH = 11
+LIBPATCH = 12
 
 PYDEPS = ["cosl"]
 
@@ -60,6 +60,56 @@ DEFAULT_CONSUMER_NAME = "send-remote-write"
 RELATION_INTERFACE_NAME = "prometheus_remote_write"
 
 DEFAULT_ALERT_RULES_RELATIVE_PATH = "./src/prometheus_alert_rules"
+
+
+def _normalize_tenant_component(value: str) -> str:
+    """Normalize relation metadata into a safe tenant-id component.
+
+    Strategy:
+    - lowercase the input
+    - replace non-alphanumeric separators with `-`
+    - collapse duplicate separators and trim edges
+    """
+    normalized = re.sub(r"[^a-z0-9-]+", "-", value.lower())
+    normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
+    return normalized
+
+
+def _short_model_uuid(model_uuid: str) -> str:
+    """Return the first eight hexadecimal characters from a model UUID."""
+    return _normalize_tenant_component(model_uuid).replace("-", "")[:8]
+
+
+def _tenant_id_for_relation(application: str, model_uuid: str) -> str:
+    """Derive a readable tenant id from application and model identity.
+
+    Strategy:
+    - use the application name as the human-readable base
+    - append a short model UUID suffix when available to avoid cross-model collisions
+    """
+    base = application
+    short_model_uuid = _short_model_uuid(model_uuid)
+    if short_model_uuid:
+        base = f"{application}-{short_model_uuid}"
+    tenant_id = _normalize_tenant_component(base)
+    if not tenant_id:
+        raise ValueError("unable to derive tenant metadata for remote-write relation")
+    return tenant_id
+
+
+def _remote_write_relation_metadata(
+    *, application: str, model: str, model_uuid: str
+) -> Dict[str, str]:
+    """Build the relation metadata that identifies one remote-write consumer."""
+    application = str(application or "")
+    model = str(model or "")
+    model_uuid = str(model_uuid or "")
+    return {
+        "tenant-id": _tenant_id_for_relation(application, model_uuid),
+        "application": application,
+        "model": model,
+        "model_uuid": model_uuid,
+    }
 
 
 class RelationNotFoundError(Exception):
@@ -504,13 +554,19 @@ class PrometheusRemoteWriteConsumer(Object):
         if not self._charm.unit.is_leader():
             return
         peer_relations = self._charm.model.get_relation(self._peer_relation_name)
-        unit_names = ({unit.name for unit in peer_relations.units} if peer_relations else set()) | {self._charm.unit.name}
+        unit_names = (
+            {unit.name for unit in peer_relations.units} if peer_relations else set()
+        ) | {self._charm.unit.name}
 
         alert_rules = AlertRules(query_type="promql", topology=self.topology)
 
         if self._forward_alert_rules:
-
-            agg_rules = self._duplicate_rules_per_unit(generic_alert_groups.aggregator_rules, unit_names, rule_names_to_duplicate=[HOST_METRICS_MISSING_RULE_NAME], is_subordinate=self._charm.meta.subordinate)
+            agg_rules = self._duplicate_rules_per_unit(
+                generic_alert_groups.aggregator_rules,
+                unit_names,
+                rule_names_to_duplicate=[HOST_METRICS_MISSING_RULE_NAME],
+                is_subordinate=self._charm.meta.subordinate,
+            )
             alert_rules.add(agg_rules, group_name_prefix=self.topology.identifier)
 
             alert_rules.add_path(self._alert_rules_path)
@@ -523,6 +579,13 @@ class PrometheusRemoteWriteConsumer(Object):
                     alert_rules_as_dict, self._extra_alert_labels
                 )
             )
+        relation.data[self._charm.app].update(
+            _remote_write_relation_metadata(
+                application=self._charm.app.name,
+                model=self._charm.model.name,
+                model_uuid=self._charm.model.uuid,
+            )
+        )
         relation.data[self._charm.app]["alert_rules"] = json.dumps(alert_rules_as_dict)
 
     def reload_alerts(self) -> None:
@@ -579,7 +642,11 @@ class PrometheusRemoteWriteConsumer(Object):
         return deduplicated_endpoints
 
     def _duplicate_rules_per_unit(
-        self, alert_rules: Dict[str, Any], peer_unit_names: Set[str], rule_names_to_duplicate: List[str], is_subordinate: bool = False
+        self,
+        alert_rules: Dict[str, Any],
+        peer_unit_names: Set[str],
+        rule_names_to_duplicate: List[str],
+        is_subordinate: bool = False,
     ) -> Dict[str, Any]:
         """Duplicate alert rule per unit in peer_units list.
 
@@ -615,12 +682,15 @@ class PrometheusRemoteWriteConsumer(Object):
                         )
 
                         # If the charm is a subordinate, the severity of the alerts need to be bumped to critical.
-                        modified_rule["labels"]["severity"] = "critical" if is_subordinate else "warning"
+                        modified_rule["labels"]["severity"] = (
+                            "critical" if is_subordinate else "warning"
+                        )
 
                         new_rules.append(modified_rule)
 
             group["rules"] = new_rules
         return updated_alert_rules
+
 
 class PrometheusRemoteWriteAlertsChangedEvent(EventBase):
     """Event emitted when Prometheus remote_write alerts change."""

@@ -20,6 +20,12 @@ Remote scrape providers publish Prometheus-style jobs through the `prometheus_sc
 contract on `metrics-endpoint`. The charm consumes those jobs and translates the supported subset
 into Alloy scrape components before wiring them to each active remote-write endpoint.
 
+For `send-remote-write`, the charm also publishes consumer identity metadata on its application
+databag so downstream gateways can derive stable tenant routes without scraping unrelated payloads.
+The metadata includes `tenant-id`, `application`, `model`, and `model_uuid`. The tenant id is
+derived as `<application>-<short-model-uuid>` when a model UUID is available, which keeps routes
+readable while still avoiding cross-model collisions.
+
 By default, Alloy preserves the generated Prometheus job name from the scrape relation. A provider
 can optionally publish a per-unit `metrics_job_name` relation key, and Alloy will use that value as
 the final metric `job` label only for that unit. This is used by `lxd-host` so the metric `job`
