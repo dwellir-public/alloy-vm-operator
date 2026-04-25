@@ -26,6 +26,28 @@ def test_start(monkeypatch):
     assert state_out.unit_status == testing.ActiveStatus("Alloy is running")
 
 
+def test_start_clears_legacy_remote_write_metadata(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    remote_write = testing.Relation(
+        "send-remote-write",
+        remote_app_name="mimir-gateway-vm",
+        remote_app_data={},
+        local_app_data={
+            "tenant-id": "legacy-tenant",
+            "application": "legacy-app",
+            "model": "legacy-model",
+            "model_uuid": "legacy-uuid",
+        },
+    )
+    monkeypatch.setattr("charm.alloy.start", lambda: None)
+    monkeypatch.setattr("charm.alloy.get_version", lambda: "1.0.0")
+
+    state_out = ctx.run(ctx.on.start(), testing.State(relations=[remote_write], leader=True))
+
+    relation_out = state_out.get_relation(remote_write.id)
+    assert relation_out.local_app_data == {}
+
+
 def test_config_drift_sets_maintenance(monkeypatch, tmp_path):
     ctx = testing.Context(AlloyCharm)
     config_path = tmp_path / "config.alloy"

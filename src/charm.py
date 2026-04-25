@@ -35,6 +35,7 @@ METRICS_JOB_NAME_FIELD = "metrics_job_name"
 SYSLOG_RECEIVER_PORT = "1514"
 SYSLOG_RECEIVER_PROTOCOLS = "tcp,udp"
 SYSLOG_RECOMMENDED_PROTOCOL = "tcp"
+REMOTE_WRITE_LEGACY_METADATA_KEYS = ("tenant-id", "application", "model", "model_uuid")
 
 
 class AlloyCharm(ops.CharmBase):
@@ -124,12 +125,14 @@ class AlloyCharm(ops.CharmBase):
         version = alloy.get_version()
         if version is not None:
             self.unit.set_workload_version(version)
+        self._refresh_remote_write_relation_metadata()
         self._refresh_syslog_receiver_relations()
         self.unit.status = ops.ActiveStatus("Alloy is running")
 
     def _on_config_changed(self, event):
         self.unit.status = ops.MaintenanceStatus("Configuring Alloy")
         if self._configure():
+            self._refresh_remote_write_relation_metadata()
             self._refresh_syslog_receiver_relations()
             self.unit.status = self._post_config_status("Alloy config updated and valid")
         else:
@@ -137,6 +140,7 @@ class AlloyCharm(ops.CharmBase):
 
     def _on_upgrade_charm(self, event):
         """Handle charm upgrade without restarting or rewriting configuration."""
+        self._refresh_remote_write_relation_metadata()
         logger.info("Upgrade-charm event: skipping config rewrite and restart.")
 
     def _on_loki_endpoint_changed(self, event):
@@ -152,6 +156,7 @@ class AlloyCharm(ops.CharmBase):
         """Update config when metrics scrape or remote write endpoints change."""
         self.unit.status = ops.MaintenanceStatus("Updating metrics endpoints")
         if self._configure():
+            self._refresh_remote_write_relation_metadata()
             self.unit.status = self._post_config_status("Alloy config updated and valid")
         else:
             self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
@@ -173,6 +178,14 @@ class AlloyCharm(ops.CharmBase):
     def _on_syslog_receiver_relation_event(self, event):
         """Publish current syslog receiver details for related requirers."""
         self._refresh_syslog_receiver_relations()
+
+    def _refresh_remote_write_relation_metadata(self) -> None:
+        """Remove legacy app-level metadata from remote-write relations."""
+        if not self.unit.is_leader():
+            return
+        for relation in self.model.relations.get("send-remote-write", []):
+            for key in REMOTE_WRITE_LEGACY_METADATA_KEYS:
+                relation.data[self.app].pop(key, None)
 
     def _configure(self) -> bool:
         """Render, validate, and persist the Alloy configuration.
