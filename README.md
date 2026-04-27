@@ -11,6 +11,7 @@ Alloy now supports:
 
 - local self metrics and `prometheus.exporter.unix` host metrics
 - relation-driven scrape targets over `metrics-endpoint` (`prometheus_scrape`)
+- manual scrape targets over `manual-metrics-jobs`
 - forwarding metrics upstream over `send-remote-write` (`prometheus_remote_write`)
 
 The intended release-1 operating model is one Alloy unit doing the scraping and forwarding work.
@@ -20,13 +21,13 @@ metrics store. Tenant-aware relation metadata is not required or published by
 
 ### No-upstream behavior
 
-If Alloy has related scrape targets but no `send-remote-write` relation:
+If Alloy has related or manual scrape targets but no `send-remote-write` relation:
 
-- relation-derived remote scrape jobs are not enabled
+- relation-derived and manual scrape jobs are not enabled
 - no `prometheus.remote_write` component is rendered
 - local self metrics are dropped rather than buffered
 - the unit goes to:
-  - `waiting: Waiting for remote write before enabling related metrics scraping`
+  - `waiting: Waiting for remote write before enabling manual or related metrics scraping`
 
 This is deliberate. The charm avoids accumulating local storage pressure when there is nowhere valid to send scraped metrics.
 
@@ -72,6 +73,74 @@ Verify a local unix-exporter metric in Mimir:
 ```bash
 juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/query?query=node_uname_info{juju_application=\"alloy-vm\"}'"
 ```
+
+### Add a manual metrics scrape job
+
+You can configure Alloy to scrape extra metrics targets that are not provided
+over a Juju relation.
+
+Prerequisite: Alloy only enables manual metrics jobs when it has an upstream
+remote-write destination.
+
+Relate Alloy to Mimir first:
+
+```bash
+juju relate alloy-vm:send-remote-write mimir-vm:receive-remote-write
+```
+
+Create a YAML file describing the extra scrape job:
+
+```yaml
+# manual-metrics-jobs.yaml
+- name: external-node-exporter
+  targets:
+    - "10.20.30.40:9100"
+  metrics_path: /metrics
+  scheme: http
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  insecure_skip_verify: false
+  labels:
+    env: prod
+    role: node
+```
+
+Apply it to the charm:
+
+```bash
+juju config alloy-vm manual-metrics-jobs="$(cat manual-metrics-jobs.yaml)"
+```
+
+What Alloy will do:
+
+- render a dedicated `prometheus.scrape` component for `external-node-exporter`
+- inject local Juju topology labels such as `juju_model`, `juju_application`, and `juju_unit`
+- forward the scraped samples through the existing `prometheus.remote_write` path
+
+Verify the rendered config on the Alloy unit:
+
+```bash
+juju ssh alloy-vm/0 'grep -n "prometheus.scrape \"external_node_exporter\"" -A20 /etc/alloy/config.alloy'
+```
+
+Verify the job label in Mimir:
+
+```bash
+juju ssh mimir-vm/0 "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/query?query=up{job=\"external-node-exporter\"}'"
+```
+
+To remove the manual job again:
+
+```bash
+juju config alloy-vm manual-metrics-jobs=""
+```
+
+Notes:
+
+- `name` and `targets` are required.
+- `scheme` must be `http` or `https`.
+- Release 1 does not support auth, client certificates, relabeling, or service discovery in manual jobs.
+- If `send-remote-write` is not related, Alloy will not enable the manual job and the unit will wait for remote write.
 
 ## Reconfigure Alloy with full override
 

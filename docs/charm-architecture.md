@@ -5,6 +5,7 @@
 `alloy-vm-operator` manages a Grafana Alloy machine deployment that can:
 
 - receive scrape targets over `metrics-endpoint`
+- receive manual scrape targets from the `manual-metrics-jobs` config option
 - forward metrics over `send-remote-write`
 - receive logs over `syslog-receiver`
 - forward logs over `send-loki-logs`
@@ -24,6 +25,11 @@ For the supported shared observability topology, those remote-write endpoints
 are plain shared Mimir-compatible URLs. `alloy-vm` does not publish or require
 tenant-specific relation metadata; partitioning is done by metric labels rather
 than tenant-aware remote-write contracts.
+
+Operators can also define manual non-related scrape jobs through the `manual-metrics-jobs` config
+option. Those jobs are parsed by [`src/manual_metrics_jobs.py`](/home/erik/dwellir-public/alloy-vm-operator/src/manual_metrics_jobs.py),
+translated into the same `MetricsScrapeJob` model as relation-derived jobs, and merged into the
+rendered Alloy config only when a `send-remote-write` endpoint exists.
 
 By default, Alloy preserves the generated Prometheus job name from the scrape relation. A provider
 can optionally publish a per-unit `metrics_job_name` relation key, and Alloy will use that value as
@@ -49,4 +55,5 @@ relation, and related machine charms decide whether to enable local forwarding.
   runtime arguments change.
 - Invalid config is validated before apply and preserved separately for debugging.
 - Remote-write gated scraping means metric scrape jobs are only rendered when at least one
-  `send-remote-write` endpoint is available.
+  `send-remote-write` endpoint is available, whether those jobs came from relations or manual
+  operator config.

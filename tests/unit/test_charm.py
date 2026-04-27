@@ -992,5 +992,148 @@ def test_metrics_targets_wait_for_remote_write(monkeypatch):
     assert "forward_to = []" in seen["config"]
     assert 'prometheus.scrape "juju_model_dummychain" {' not in seen["config"]
     assert state_out.unit_status == testing.WaitingStatus(
-        "Waiting for remote write before enabling related metrics scraping"
+        "Waiting for remote write before enabling manual or related metrics scraping"
+    )
+
+
+def test_manual_metrics_jobs_render_with_remote_write(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.MetricsEndpointConsumer.jobs",
+        lambda _self: [],
+    )
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: [{"url": "http://10.0.0.10:9009/api/v1/push"}]),
+    )
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "manual-metrics-jobs": """
+- name: external-node-exporter
+  targets:
+    - "10.20.30.40:9100"
+  metrics_path: /metrics
+  scheme: https
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  insecure_skip_verify: true
+  labels:
+    env: prod
+""",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    rendered = seen["config"]
+    assert 'prometheus.scrape "external_node_exporter" {' in rendered
+    assert '__address__ = "10.20.30.40:9100"' in rendered
+    assert 'job_name = "external-node-exporter"' in rendered
+    assert "insecure_skip_verify = true" in rendered
+    assert 'env = "prod"' in rendered
+    assert 'juju_application = "alloy-vm"' in rendered
+    assert state_out.unit_status == testing.ActiveStatus("Alloy config updated and valid")
+
+
+def test_manual_metrics_jobs_wait_for_remote_write(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    seen = {}
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.MetricsEndpointConsumer.jobs",
+        lambda _self: [],
+    )
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: []),
+    )
+
+    def write_config_text(config_text: str, **_):
+        seen["config"] = config_text
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "manual-metrics-jobs": """
+- name: external-node-exporter
+  targets:
+    - "10.20.30.40:9100"
+""",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    assert 'prometheus.remote_write "metrics" {' not in seen["config"]
+    assert 'prometheus.scrape "external_node_exporter" {' not in seen["config"]
+    assert state_out.unit_status == testing.WaitingStatus(
+        "Waiting for remote write before enabling manual or related metrics scraping"
+    )
+
+
+def test_manual_metrics_jobs_invalid_config_blocks(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr("charm.MetricsEndpointConsumer.jobs", lambda _self: [])
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: [{"url": "http://10.0.0.10:9009/api/v1/push"}]),
+    )
+    monkeypatch.setattr("charm.alloy.write_config_text", lambda *_, **__: None)
+
+    config = {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "",
+        "manual-metrics-jobs": """
+- name: external-node-exporter
+  targets:
+    - "10.20.30.40:9100"
+  labels:
+    juju_model: fake
+""",
+        "log-level": "info",
+    }
+
+    state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
+
+    assert state_out.unit_status == testing.BlockedStatus(
+        "manual metrics job 'external-node-exporter' labels must not override reserved juju labels"
     )

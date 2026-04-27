@@ -99,6 +99,22 @@ config:
         Set to 0 to use the same value as `syslog-rate-limit`.
       default: 0
       type: int
+    manual-metrics-jobs:
+      description: |
+        YAML list of manual metrics scrape jobs for non-related Prometheus targets.
+        Alloy only enables these jobs when `send-remote-write` is related.
+
+        Supported fields per job:
+        - `name`
+        - `targets`
+        - `metrics_path`
+        - `scheme`
+        - `scrape_interval`
+        - `scrape_timeout`
+        - `insecure_skip_verify`
+        - `labels`
+      default: ""
+      type: string
 
 parts:
   charm:

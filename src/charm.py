@@ -26,6 +26,7 @@ from config_builder import (
     MetricsScrapeJob,
     ScrapeTarget,
 )
+from manual_metrics_jobs import ManualMetricsJobsError, parse_manual_metrics_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +132,12 @@ class AlloyCharm(ops.CharmBase):
 
     def _on_config_changed(self, event):
         self.unit.status = ops.MaintenanceStatus("Configuring Alloy")
-        if self._configure():
+        status = self._configure()
+        if status is not None:
             self._refresh_remote_write_relation_metadata()
             self._refresh_syslog_receiver_relations()
-            self.unit.status = self._post_config_status("Alloy config updated and valid")
-        else:
+            self.unit.status = status
+        elif not isinstance(self.unit.status, ops.BlockedStatus):
             self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
 
     def _on_upgrade_charm(self, event):
@@ -146,19 +148,21 @@ class AlloyCharm(ops.CharmBase):
     def _on_loki_endpoint_changed(self, event):
         """Update config when Loki endpoints change."""
         self.unit.status = ops.MaintenanceStatus("Updating Loki endpoints")
-        if self._configure():
+        status = self._configure()
+        if status is not None:
             self._refresh_syslog_receiver_relations()
-            self.unit.status = self._post_config_status("Alloy config updated and valid")
-        else:
+            self.unit.status = status
+        elif not isinstance(self.unit.status, ops.BlockedStatus):
             self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
 
     def _on_metrics_relation_changed(self, event):
         """Update config when metrics scrape or remote write endpoints change."""
         self.unit.status = ops.MaintenanceStatus("Updating metrics endpoints")
-        if self._configure():
+        status = self._configure()
+        if status is not None:
             self._refresh_remote_write_relation_metadata()
-            self.unit.status = self._post_config_status("Alloy config updated and valid")
-        else:
+            self.unit.status = status
+        elif not isinstance(self.unit.status, ops.BlockedStatus):
             self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
 
     def _on_update_status(self, event):
@@ -187,7 +191,7 @@ class AlloyCharm(ops.CharmBase):
             for key in REMOTE_WRITE_LEGACY_METADATA_KEYS:
                 relation.data[self.app].pop(key, None)
 
-    def _configure(self) -> bool:
+    def _configure(self) -> ops.StatusBase | None:
         """Render, validate, and persist the Alloy configuration.
 
         Flow:
@@ -198,7 +202,12 @@ class AlloyCharm(ops.CharmBase):
         - Track last-good config and clear drift status on success.
         """
         alloy.ensure_config_dir_permissions(str(Path(DEFAULT_CONFIG_PATH).parent))
-        config_text = self._render_config_text()
+        try:
+            manual_metrics_jobs = self._manual_metrics_scrape_jobs()
+        except ManualMetricsJobsError as exc:
+            self.unit.status = ops.BlockedStatus(str(exc))
+            return None
+        config_text = self._render_config_text(manual_metrics_jobs=manual_metrics_jobs)
         desired_custom_args = self._desired_custom_args()
         live_debugging = self._live_debugging_enabled()
         syslog_receivers_enabled = self._syslog_receivers_enabled()
@@ -207,7 +216,10 @@ class AlloyCharm(ops.CharmBase):
             or live_debugging != self._stored.last_live_debugging
         )
         if not config_text:
-            return True
+            return self._post_config_status(
+                "Alloy config updated and valid",
+                manual_metrics_jobs=manual_metrics_jobs,
+            )
         if (
             self._stored.last_good_config
             and config_text == self._stored.last_good_config
@@ -217,13 +229,16 @@ class AlloyCharm(ops.CharmBase):
             and syslog_receivers_enabled == self._stored.last_syslog_receivers_enabled
         ):
             logger.debug("Alloy config unchanged; skipping apply.")
-            return True
+            return self._post_config_status(
+                "Alloy config updated and valid",
+                manual_metrics_jobs=manual_metrics_jobs,
+            )
         if not self._validate_config_text(config_text):
             logger.warning("Configuration validation failed; keeping previous config.")
             failed_path = self._persist_failed_config(config_text)
             if failed_path:
                 self._stored.last_failed_config_path = str(failed_path)
-            return False
+            return None
         alloy.write_config_text(
             config_text,
             config_path=Path(DEFAULT_CONFIG_PATH),
@@ -245,8 +260,11 @@ class AlloyCharm(ops.CharmBase):
                 alloy.restart()
         except subprocess.CalledProcessError as exc:
             logger.warning("Failed to apply Alloy config update: %s", exc)
-            return False
-        return True
+            return None
+        return self._post_config_status(
+            "Alloy config updated and valid",
+            manual_metrics_jobs=manual_metrics_jobs,
+        )
 
     def _reconcile_config_drift_status(self) -> None:
         """Detect config drift and update unit status if appropriate."""
@@ -315,14 +333,16 @@ class AlloyCharm(ops.CharmBase):
             and self.unit.status.message == "Alloy service not running"
         )
 
-    def _render_config_text(self) -> str:
+    def _render_config_text(self, *, manual_metrics_jobs: list[MetricsScrapeJob]) -> str:
         override = str(self.config.get("config-override", "")).strip()
         if override:
             return override
         builder = ConfigBuilder(
             loki_endpoints=self._loki_endpoint_urls(),
             remote_write_endpoints=self._remote_write_endpoint_urls(),
-            metrics_scrape_jobs=self._active_metrics_scrape_jobs(),
+            metrics_scrape_jobs=self._active_metrics_scrape_jobs(
+                manual_metrics_jobs=manual_metrics_jobs
+            ),
             systemd_units=self._systemd_units(),
             journal_kernel=self._journal_kernel_enabled(),
             journal_match_expressions=self._journal_match_expressions(),
@@ -531,11 +551,32 @@ class AlloyCharm(ops.CharmBase):
             if endpoint.get("url")
         ]
 
-    def _active_metrics_scrape_jobs(self) -> list[MetricsScrapeJob]:
-        """Return translated remote scrape jobs only when an upstream exists."""
+    def _active_metrics_scrape_jobs(
+        self,
+        *,
+        manual_metrics_jobs: list[MetricsScrapeJob],
+    ) -> list[MetricsScrapeJob]:
+        """Return rendered scrape jobs only when an upstream exists."""
         if not self._remote_write_endpoint_urls():
             return []
-        return self._translated_metrics_scrape_jobs()
+        return [*self._translated_metrics_scrape_jobs(), *manual_metrics_jobs]
+
+    def _manual_metrics_scrape_jobs(self) -> list[MetricsScrapeJob]:
+        """Parse manual operator-defined scrape jobs from charm config."""
+        if str(self.config.get("config-override", "")).strip():
+            return []
+        return parse_manual_metrics_jobs(
+            str(self.config.get("manual-metrics-jobs", "")),
+            topology_labels=self._topology.as_dict(
+                remapped_keys={
+                    "model": "juju_model",
+                    "model_uuid": "juju_model_uuid",
+                    "application": "juju_application",
+                    "unit": "juju_unit",
+                    "charm_name": "juju_charm",
+                }
+            ),
+        )
 
     def _translated_metrics_scrape_jobs(self) -> list[MetricsScrapeJob]:
         """Translate a supported subset of Prometheus scrape jobs into Alloy jobs."""
@@ -753,11 +794,18 @@ class AlloyCharm(ops.CharmBase):
             return f"[{host}]:{port}"
         return f"[{target}]"
 
-    def _post_config_status(self, active_message: str) -> ops.StatusBase:
+    def _post_config_status(
+        self,
+        active_message: str,
+        *,
+        manual_metrics_jobs: list[MetricsScrapeJob] | None = None,
+    ) -> ops.StatusBase:
         """Return the desired post-config status for the current relation state."""
-        if self._metrics_consumer.jobs() and not self._remote_write_endpoint_urls():
+        if (
+            self._metrics_consumer.jobs() or manual_metrics_jobs
+        ) and not self._remote_write_endpoint_urls():
             return ops.WaitingStatus(
-                "Waiting for remote write before enabling related metrics scraping"
+                "Waiting for remote write before enabling manual or related metrics scraping"
             )
         return ops.ActiveStatus(active_message)
 
