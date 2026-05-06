@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import ops
+from charms.grafana_cloud_integrator.v0.cloud_config_requirer import GrafanaCloudConfigRequirer
 from charms.loki_k8s.v1.loki_push_api import LokiPushApiConsumer
 from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointConsumer
 from charms.prometheus_k8s.v1.prometheus_remote_write import PrometheusRemoteWriteConsumer
@@ -26,7 +27,9 @@ from config_builder import (
     MetricsScrapeJob,
     ScrapeTarget,
 )
+from grafanacloud_connectivity import probe_endpoint
 from manual_metrics_jobs import ManualMetricsJobsError, parse_manual_metrics_jobs
+from outbound_endpoints import OutboundEndpoint, dedupe_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,7 @@ class AlloyCharm(ops.CharmBase):
             self,
             relation_name="metrics-endpoint",
         )
+        self.grafana_cloud = GrafanaCloudConfigRequirer(self)
         self._remote_write_consumer = PrometheusRemoteWriteConsumer(
             self,
             relation_name="send-remote-write",
@@ -94,6 +98,12 @@ class AlloyCharm(ops.CharmBase):
             self._remote_write_consumer.on.endpoints_changed,
             self._on_metrics_relation_changed,
         )
+        for event in (
+            self.on["grafana-cloud-config"].relation_joined,
+            self.on["grafana-cloud-config"].relation_changed,
+            self.on["grafana-cloud-config"].relation_broken,
+        ):
+            self.framework.observe(event, self._on_observability_endpoint_changed)
         self.framework.observe(
             self.on[SYSLOG_RELATION_NAME].relation_created,
             self._on_syslog_receiver_relation_event,
@@ -165,6 +175,17 @@ class AlloyCharm(ops.CharmBase):
         elif not isinstance(self.unit.status, ops.BlockedStatus):
             self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
 
+    def _on_observability_endpoint_changed(self, event):
+        """Update config when Grafana Cloud endpoints change."""
+        self.unit.status = ops.MaintenanceStatus("Updating observability endpoints")
+        status = self._configure()
+        if status is not None:
+            self._refresh_remote_write_relation_metadata()
+            self._refresh_syslog_receiver_relations()
+            self.unit.status = status
+        elif not isinstance(self.unit.status, ops.BlockedStatus):
+            self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
+
     def _on_update_status(self, event):
         """Handle periodic status updates (detect drift and workload health)."""
         if not alloy.is_active():
@@ -176,7 +197,13 @@ class AlloyCharm(ops.CharmBase):
             self.unit.set_workload_version(version)
         self._reconcile_config_drift_status()
         self._refresh_syslog_receiver_relations()
-        if self._is_service_down_status() and not self._stored.config_drifted:
+        if self._stored.config_drifted:
+            return
+        connectivity_error = self._grafana_cloud_status_error()
+        if connectivity_error is not None:
+            self.unit.status = ops.BlockedStatus(connectivity_error)
+            return
+        if self._is_grafana_cloud_status() or self._is_service_down_status():
             self.unit.status = self._post_config_status("Alloy is running.")
 
     def _on_syslog_receiver_relation_event(self, event):
@@ -332,6 +359,12 @@ class AlloyCharm(ops.CharmBase):
             isinstance(self.unit.status, ops.MaintenanceStatus)
             and self.unit.status.message == "Alloy service not running"
         )
+
+    def _is_grafana_cloud_status(self) -> bool:
+        """Return whether the current status is from a Grafana Cloud connectivity check."""
+        return isinstance(
+            self.unit.status, ops.BlockedStatus
+        ) and self.unit.status.message.startswith("Grafana Cloud ")
 
     def _render_config_text(self, *, manual_metrics_jobs: list[MetricsScrapeJob]) -> str:
         override = str(self.config.get("config-override", "")).strip()
@@ -537,19 +570,51 @@ class AlloyCharm(ops.CharmBase):
             if databag.get(key) != value:
                 databag[key] = value
 
-    def _loki_endpoint_urls(self) -> list[str]:
+    def _grafana_cloud_metrics_endpoints(self) -> list[OutboundEndpoint]:
+        """Return Grafana Cloud remote-write endpoints."""
+        if not self.grafana_cloud.prometheus_ready:
+            return []
+        credentials = self.grafana_cloud.prometheus_credentials
         return [
-            endpoint["url"]
+            OutboundEndpoint(
+                url=self.grafana_cloud.prometheus_url,
+                username=credentials.username if credentials else "",
+                password=credentials.password if credentials else "",
+                tls_ca_pem=self.grafana_cloud.tls_ca,
+            )
+        ]
+
+    def _grafana_cloud_loki_endpoints(self) -> list[OutboundEndpoint]:
+        """Return Grafana Cloud Loki endpoints."""
+        if not self.grafana_cloud.loki_ready:
+            return []
+        credentials = self.grafana_cloud.loki_credentials
+        return [
+            OutboundEndpoint(
+                url=self.grafana_cloud.loki_url,
+                username=credentials.username if credentials else "",
+                password=credentials.password if credentials else "",
+                tls_ca_pem=self.grafana_cloud.tls_ca,
+            )
+        ]
+
+    def _loki_endpoint_urls(self) -> list[OutboundEndpoint]:
+        """Return outbound Loki endpoints from all configured relations."""
+        relation_endpoints = [
+            OutboundEndpoint(url=endpoint["url"])
             for endpoint in self._loki_consumer.loki_endpoints
             if endpoint.get("url")
         ]
+        return dedupe_endpoints([*relation_endpoints, *self._grafana_cloud_loki_endpoints()])
 
-    def _remote_write_endpoint_urls(self) -> list[str]:
-        return [
-            endpoint["url"]
+    def _remote_write_endpoint_urls(self) -> list[OutboundEndpoint]:
+        """Return outbound remote-write endpoints from all configured relations."""
+        relation_endpoints = [
+            OutboundEndpoint(url=endpoint["url"])
             for endpoint in self._remote_write_consumer.endpoints
             if endpoint.get("url")
         ]
+        return dedupe_endpoints([*relation_endpoints, *self._grafana_cloud_metrics_endpoints()])
 
     def _active_metrics_scrape_jobs(
         self,
@@ -808,6 +873,18 @@ class AlloyCharm(ops.CharmBase):
                 "Waiting for remote write before enabling manual or related metrics scraping"
             )
         return ops.ActiveStatus(active_message)
+
+    def _grafana_cloud_status_error(self) -> str | None:
+        """Return the first Grafana Cloud connectivity failure, if any."""
+        for endpoint in self._grafana_cloud_metrics_endpoints():
+            ok, reason = probe_endpoint(endpoint)
+            if not ok:
+                return f"Grafana Cloud metrics connectivity failed: {reason}"
+        for endpoint in self._grafana_cloud_loki_endpoints():
+            ok, reason = probe_endpoint(endpoint)
+            if not ok:
+                return f"Grafana Cloud logs connectivity failed: {reason}"
+        return None
 
     def _systemd_units(self) -> list[str]:
         raw = str(self.config.get("systemd-units", "")).strip()

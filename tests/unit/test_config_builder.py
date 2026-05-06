@@ -4,6 +4,7 @@
 import json
 
 from config_builder import ConfigBuilder, MetricsScrapeJob, ScrapeTarget
+from outbound_endpoints import OutboundEndpoint
 
 TOPOLOGY = {
     "juju_model": "test-model",
@@ -53,6 +54,28 @@ def test_local_metrics_forward_to_remote_write_when_endpoint_exists():
     assert 'url = "http://10.0.0.10:9009/api/v1/push"' in rendered
     assert 'max_keepalive_time = "30m"' in rendered
     assert "forward_to = [prometheus.remote_write.metrics.receiver]" in rendered
+
+
+def test_remote_write_renders_basic_auth_and_tls_config():
+    expected_url = "https://prometheus-prod-39-prod-eu-north-0.grafana.net/api/prom/push"
+    expected_ca = 'ca_pem = "-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\\n"'
+    rendered = _builder(
+        remote_write_endpoints=[
+            OutboundEndpoint(
+                url=expected_url,
+                username="1076854",
+                password="glc_token",
+                tls_ca_pem="-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n",
+            )
+        ]
+    ).build()
+
+    assert f'url = "{expected_url}"' in rendered
+    assert "basic_auth {" in rendered
+    assert 'username = "1076854"' in rendered
+    assert 'password = "glc_token"' in rendered
+    assert "tls_config {" in rendered
+    assert expected_ca in rendered
 
 
 def test_remote_scrape_jobs_are_rendered_with_topology_labels():
@@ -146,6 +169,29 @@ def test_syslog_receivers_with_loki_use_remote_processor():
     assert 'target_label  = "syslog_facility"' in rendered
     assert 'target_label  = "syslog_proc_id"' in rendered
     assert 'target_label  = "connection_hostname"' in rendered
+
+
+def test_loki_writer_renders_basic_auth_and_tls_config():
+    expected_url = "https://logs-prod-025.grafana.net/loki/api/v1/push"
+    expected_ca = 'ca_pem = "-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\\n"'
+    rendered = _builder(
+        loki_endpoints=[
+            OutboundEndpoint(
+                url=expected_url,
+                username="639149",
+                password="glc_token",
+                tls_ca_pem="-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n",
+            )
+        ],
+        systemd_units=["ssh.service"],
+    ).build()
+
+    assert f'url = "{expected_url}"' in rendered
+    assert "basic_auth {" in rendered
+    assert 'username = "639149"' in rendered
+    assert 'password = "glc_token"' in rendered
+    assert "tls_config {" in rendered
+    assert expected_ca in rendered
 
 
 def test_syslog_drop_access_logs_renders_drop_stage():

@@ -7,6 +7,7 @@
 - receive scrape targets over `metrics-endpoint`
 - receive manual scrape targets from the `manual-metrics-jobs` config option
 - forward metrics over `send-remote-write`
+- consume authenticated cloud sink config over `grafana-cloud-config`
 - receive logs over `syslog-receiver`
 - forward logs over `send-loki-logs`
 
@@ -21,10 +22,11 @@ Remote scrape providers publish Prometheus-style jobs through the `prometheus_sc
 contract on `metrics-endpoint`. The charm consumes those jobs and translates the supported subset
 into Alloy scrape components before wiring them to each active remote-write endpoint.
 
-For the supported shared observability topology, those remote-write endpoints
-are plain shared Mimir-compatible URLs. `alloy-vm` does not publish or require
-tenant-specific relation metadata; partitioning is done by metric labels rather
-than tenant-aware remote-write contracts.
+Remote-write destinations can come from the plain `send-remote-write` relation
+or from `grafana-cloud-config`. The Grafana Cloud path extends the sink model
+to include per-signal basic auth credentials and an optional CA bundle, so
+Alloy can render authenticated `prometheus.remote_write` endpoints while still
+keeping the existing relation contract for plain upstream URLs.
 
 Operators can also define manual non-related scrape jobs through the `manual-metrics-jobs` config
 option. Those jobs are parsed by [`src/manual_metrics_jobs.py`](/home/erik/dwellir-public/alloy-vm-operator/src/manual_metrics_jobs.py),
@@ -45,9 +47,16 @@ This override is intentionally opt-in:
 
 ## Logging Flow
 
-For logs, Alloy can either forward its own local journal collection or accept remote syslog traffic
-through `syslog-receiver`. The charm publishes receiver readiness and connection details on the
-relation, and related machine charms decide whether to enable local forwarding.
+For logs, Alloy can either forward its own local journal collection or accept
+remote syslog traffic through `syslog-receiver`. Outbound Loki sinks can come
+from `send-loki-logs` or `grafana-cloud-config`, and when both are present the
+rendered `loki.write` block forwards to both destinations. Grafana Cloud Loki
+uses signal-specific credentials from the relation when available.
+
+During `update-status`, the charm probes Grafana Cloud metrics and logs
+endpoints and surfaces connectivity failures as a blocked status. Successful
+probes clear prior Grafana Cloud connectivity errors on the next status
+reconciliation.
 
 ## Operational Notes
 

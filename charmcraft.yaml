@@ -136,6 +136,10 @@ requires:
     interface: prometheus_remote_write
     optional: true
     description: Send scraped metrics to an upstream Prometheus remote write receiver.
+  grafana-cloud-config:
+    interface: grafana-cloud-config
+    optional: true
+    description: Receive Grafana Cloud observability endpoints and credentials.
 
 provides:
   syslog-receiver:

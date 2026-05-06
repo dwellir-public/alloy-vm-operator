@@ -8,7 +8,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+
+from outbound_endpoints import OutboundEndpoint
 
 DEFAULT_CONFIG_DIR = "/etc/alloy"
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.alloy")
@@ -50,8 +53,8 @@ class ConfigBuilder:
     def __init__(
         self,
         *,
-        loki_endpoints: list[str],
-        remote_write_endpoints: list[str],
+        loki_endpoints: Sequence[str | OutboundEndpoint],
+        remote_write_endpoints: Sequence[str | OutboundEndpoint],
         metrics_scrape_jobs: list[MetricsScrapeJob],
         systemd_units: list[str],
         journal_kernel: bool,
@@ -81,6 +84,16 @@ class ConfigBuilder:
         self._receiver_hostname = receiver_hostname
         self._receiver_ip = receiver_ip
         self._topology_labels = topology_labels
+
+    @staticmethod
+    def _normalize_endpoints(
+        endpoints: Sequence[str | OutboundEndpoint],
+    ) -> list[OutboundEndpoint]:
+        """Return endpoint objects regardless of the input representation."""
+        return [
+            endpoint if isinstance(endpoint, OutboundEndpoint) else OutboundEndpoint(url=endpoint)
+            for endpoint in endpoints
+        ]
 
     def build(self) -> str:
         """Return the Alloy configuration text."""
@@ -198,16 +211,8 @@ class ConfigBuilder:
 
     def _render_remote_write(self) -> str:
         endpoint_blocks = "\n".join(
-            [
-                "\n".join(
-                    [
-                        "  endpoint {",
-                        f'    url = "{endpoint}"',
-                        "  }",
-                    ]
-                )
-                for endpoint in self._remote_write_endpoints
-            ]
+            "\n".join(self._render_endpoint_block(endpoint))
+            for endpoint in self._normalize_endpoints(self._remote_write_endpoints)
         )
         return "\n".join(
             [
@@ -220,6 +225,29 @@ class ConfigBuilder:
                 "}",
             ]
         )
+
+    def _render_endpoint_block(self, endpoint: OutboundEndpoint) -> list[str]:
+        """Render one Alloy endpoint block with optional auth and TLS CA."""
+        lines = ["  endpoint {", f'    url = "{endpoint.url}"']
+        if endpoint.username and endpoint.password:
+            lines.extend(
+                [
+                    "    basic_auth {",
+                    f"      username = {json.dumps(endpoint.username)}",
+                    f"      password = {json.dumps(endpoint.password)}",
+                    "    }",
+                ]
+            )
+        if endpoint.tls_ca_pem:
+            lines.extend(
+                [
+                    "    tls_config {",
+                    f"      ca_pem = {json.dumps(endpoint.tls_ca_pem)}",
+                    "    }",
+                ]
+            )
+        lines.append("  }")
+        return lines
 
     def _render_metrics_scrape(self, scrape_job: MetricsScrapeJob) -> str:
         component_name = self._sanitize_component_name(scrape_job.job_name)
@@ -506,14 +534,8 @@ class ConfigBuilder:
         if not self._loki_endpoints:
             return ""
         endpoints = "\n".join(
-            "\n".join(
-                [
-                    "  endpoint {",
-                    f'    url = "{endpoint}"',
-                    "  }",
-                ]
-            )
-            for endpoint in self._loki_endpoints
+            "\n".join(self._render_endpoint_block(endpoint))
+            for endpoint in self._normalize_endpoints(self._loki_endpoints)
         )
         return "\n".join(
             [

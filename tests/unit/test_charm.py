@@ -91,6 +91,30 @@ def test_update_status_refreshes_workload_version(monkeypatch):
     assert state_out.workload_version == "1.12.2"
 
 
+def test_update_status_blocks_on_grafana_cloud_connectivity_failure(monkeypatch):
+    ctx = testing.Context(AlloyCharm)
+    relation = testing.Relation(
+        endpoint="grafana-cloud-config",
+        interface="grafana-cloud-config",
+        remote_app_name="grafana-cloud-integrator",
+        remote_app_data={
+            "prometheus_url": "https://prometheus-prod-39-prod-eu-north-0.grafana.net/api/prom/push",
+            "prometheus_username": "1076854",
+            "prometheus_password": "prom-token",
+        },
+    )
+    monkeypatch.setattr("charm.alloy.is_active", lambda: True)
+    monkeypatch.setattr("charm.alloy.get_version", lambda: "1.12.2")
+    monkeypatch.setattr("charm.AlloyCharm._reconcile_config_drift_status", lambda *_: None)
+    monkeypatch.setattr("charm.probe_endpoint", lambda *_args, **_kwargs: (False, "http 500"))
+
+    state_out = ctx.run(ctx.on.update_status(), testing.State(relations=[relation]))
+
+    assert state_out.unit_status == testing.BlockedStatus(
+        "Grafana Cloud metrics connectivity failed: http 500"
+    )
+
+
 def test_live_debugging_enabled_writes_debug_args_and_config(monkeypatch):
     ctx = testing.Context(AlloyCharm)
     seen = {}
