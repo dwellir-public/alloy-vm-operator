@@ -14,6 +14,90 @@ Alloy now supports:
 - manual scrape targets over `manual-metrics-jobs`
 - forwarding metrics upstream over `send-remote-write` (`prometheus_remote_write`)
 
+## Grafana Cloud Integrator
+
+`alloy-vm` can also consume Grafana Cloud endpoints and credentials from
+`grafana-cloud-integrator` over:
+
+- endpoint name: `grafana-cloud-config`
+- interface name: `grafana_cloud_config`
+
+This relation is separate from:
+
+- `send-remote-write` for plain Prometheus remote write URLs
+- `send-loki-logs` for plain Loki push URLs
+
+When `grafana-cloud-config` is related, `alloy-vm` can render authenticated:
+
+- `prometheus.remote_write` endpoints for Grafana Cloud metrics
+- `loki.write` endpoints for Grafana Cloud logs
+
+If `send-remote-write` or `send-loki-logs` is also related, Alloy forwards to
+both sets of endpoints. This means Grafana Cloud integration is additive rather
+than replacing existing upstreams.
+
+### Credential behavior
+
+`alloy-vm` consumes the relation data published by `grafana-cloud-integrator`.
+That contract supports:
+
+- shared legacy `username` and `password`
+- signal-specific credentials such as:
+  - `prometheus_username` / `prometheus_password`
+  - `loki_username` / `loki_password`
+
+Signal-specific credentials are used when present. This is required for Grafana
+Cloud setups where Prometheus and Loki use different instance IDs or tokens.
+
+### Connectivity checks
+
+During `update-status`, `alloy-vm` probes Grafana Cloud endpoints from the
+relation and surfaces failures as a blocked status, for example:
+
+- `Grafana Cloud metrics connectivity failed: ...`
+- `Grafana Cloud logs connectivity failed: ...`
+
+This only applies to the Grafana Cloud relation path. Plain `send-remote-write`
+and `send-loki-logs` relations keep their current behavior.
+
+### Example deployment
+
+Deploy and configure `grafana-cloud-integrator`:
+
+```bash
+juju deploy grafana-cloud-integrator
+juju config grafana-cloud-integrator prometheus-url="https://prometheus-prod-39-prod-eu-north-0.grafana.net/api/prom/push"
+juju config grafana-cloud-integrator loki-url="https://logs-prod-025.grafana.net/loki/api/v1/push"
+juju config grafana-cloud-integrator signal-credentials='
+prometheus:
+  username: "1076854"
+  password: "<prometheus-token>"
+loki:
+  username: "639149"
+  password: "<loki-token>"
+'
+```
+
+Relate it to Alloy:
+
+```bash
+juju relate alloy-vm:grafana-cloud-config grafana-cloud-integrator:grafana-cloud-config
+```
+
+Verify the rendered config on the Alloy unit:
+
+```bash
+juju ssh alloy-vm/0 'grep -n "prometheus.remote_write \\\"metrics\\\"" -A20 /etc/alloy/config.alloy'
+juju ssh alloy-vm/0 'grep -n "loki.write \\\"main\\\"" -A20 /etc/alloy/config.alloy'
+```
+
+Expected result:
+
+- the Grafana Cloud Prometheus endpoint is rendered with `basic_auth`
+- the Grafana Cloud Loki endpoint is rendered with `basic_auth`
+- if plain upstream relations also exist, the rendered Alloy config contains
+  both the plain and Grafana Cloud endpoints
+
 The intended release-1 operating model is one Alloy unit doing the scraping and forwarding work.
 For the shared observability deployment, Alloy forwards into one shared Mimir
 metrics store. Tenant-aware relation metadata is not required or published by
