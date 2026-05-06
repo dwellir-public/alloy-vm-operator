@@ -137,7 +137,7 @@ requires:
     optional: true
     description: Send scraped metrics to an upstream Prometheus remote write receiver.
   grafana-cloud-config:
-    interface: grafana-cloud-config
+    interface: grafana_cloud_config
     optional: true
     description: Receive Grafana Cloud observability endpoints and credentials.
 
