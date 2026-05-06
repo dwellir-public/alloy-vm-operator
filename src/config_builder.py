@@ -47,6 +47,26 @@ class MetricsScrapeJob:
     tls_config: dict[str, str | bool] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class FileLogSource:
+    """One translated file log source."""
+
+    include: list[str]
+    exclude: list[str] = field(default_factory=list)
+    attributes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class LogSourceGroup:
+    """One topology-labeled log source group."""
+
+    component_name: str
+    topology_labels: dict[str, str]
+    systemd_units: list[str] = field(default_factory=list)
+    journal_match_expressions: list[str] = field(default_factory=list)
+    file_log_sources: list[FileLogSource] = field(default_factory=list)
+
+
 class ConfigBuilder:
     """Alloy configuration builder class."""
 
@@ -68,6 +88,7 @@ class ConfigBuilder:
         receiver_hostname: str = "",
         receiver_ip: str = "",
         topology_labels: dict[str, str],
+        log_source_groups: list[LogSourceGroup] | None = None,
     ):
         self._loki_endpoints = loki_endpoints
         self._remote_write_endpoints = remote_write_endpoints
@@ -84,6 +105,7 @@ class ConfigBuilder:
         self._receiver_hostname = receiver_hostname
         self._receiver_ip = receiver_ip
         self._topology_labels = topology_labels
+        self._log_source_groups = log_source_groups or []
 
     @staticmethod
     def _normalize_endpoints(
@@ -128,10 +150,14 @@ class ConfigBuilder:
             blocks.extend([self._render_live_debugging(), ""])
         if self._has_log_pipeline():
             blocks.extend(["// LOGS -> LOKI (Juju topology labels)", ""])
-        if self._has_journal_sources():
+        if self._has_labeled_log_sources():
             blocks.extend([self._render_journal_relabel(), ""])
-        for block in self._render_service_journal_sources():
-            blocks.extend([block, ""])
+        for group in self._effective_log_source_groups():
+            blocks.extend([self._render_group_processor(group), ""])
+            for block in self._render_group_journal_sources(group):
+                blocks.extend([block, ""])
+            for block in self._render_group_filelog_sources(group):
+                blocks.extend([block, ""])
         for block in self._render_host_journal_sources():
             blocks.extend([block, ""])
         if self._enable_syslog_receivers:
@@ -145,7 +171,7 @@ class ConfigBuilder:
                 ]
             )
         if self._has_log_pipeline():
-            blocks.extend([self._render_juju_processor(), self._render_loki_writer()])
+            blocks.append(self._render_loki_writer())
         return blocks
 
     def _render_logging(self) -> str:
@@ -313,22 +339,7 @@ class ConfigBuilder:
         )
 
     def _render_service_journal_sources(self) -> list[str]:
-        blocks: list[str] = []
-        for index, unit in enumerate(self._systemd_units):
-            component_name = "journald" if len(self._systemd_units) == 1 else f"journald_{index}"
-            blocks.append(
-                "\n".join(
-                    [
-                        f'loki.source.journal "{component_name}" {{',
-                        f'  matches = "{self._format_unit_match(unit)}"',
-                        "  relabel_rules = loki.relabel.journal.rules",
-                        f'  labels = {{log_source = "journal", systemd_unit = "{unit}"}}',
-                        "  forward_to = [loki.process.juju.receiver]",
-                        "}",
-                    ]
-                )
-            )
-        return blocks
+        return []
 
     def _render_host_journal_sources(self) -> list[str]:
         forward_to = (
@@ -502,19 +513,19 @@ class ConfigBuilder:
         )
         return "\n".join(lines)
 
-    def _render_juju_processor(self) -> str:
-        labels_block = "\n".join(self._render_topology_labels())
+    def _render_group_processor(self, group: LogSourceGroup) -> str:
         forward_to = (
             "  forward_to = [loki.write.main.receiver]"
             if self._loki_endpoints
             else "  forward_to = []"
         )
+        component_name = self._sanitize_component_name(group.component_name)
         return "\n".join(
             [
-                'loki.process "juju" {',
+                f'loki.process "{component_name}" {{',
                 "  stage.static_labels {",
                 "    values = {",
-                labels_block,
+                "\n".join(self._render_label_lines(group.topology_labels, indent="      ")),
                 "    }",
                 "  }",
                 forward_to,
@@ -529,6 +540,13 @@ class ConfigBuilder:
             if value:
                 lines.append(f'      {key} = "{value}",')
         return lines or ["      {}"]
+
+    def _render_label_lines(self, labels: dict[str, str], *, indent: str) -> list[str]:
+        """Render a stable block of Alloy object-label assignments."""
+        return [
+            f"{indent}{self._render_key(key)} = {json.dumps(labels[key])},"
+            for key in sorted(labels)
+        ]
 
     def _render_loki_writer(self) -> str:
         if not self._loki_endpoints:
@@ -554,12 +572,14 @@ class ConfigBuilder:
     def _has_host_journal_source(self) -> bool:
         return bool(self._host_journal_matches())
 
-    def _has_journal_sources(self) -> bool:
-        return bool(self._systemd_units or self._has_host_journal_source())
+    def _has_labeled_log_sources(self) -> bool:
+        return bool(self._effective_log_source_groups())
 
     def _has_log_pipeline(self) -> bool:
         return bool(
-            self._systemd_units or self._has_host_journal_source() or self._enable_syslog_receivers
+            self._effective_log_source_groups()
+            or self._has_host_journal_source()
+            or self._enable_syslog_receivers
         )
 
     def _host_journal_matches(self) -> list[str]:
@@ -585,9 +605,128 @@ class ConfigBuilder:
         return self._syslog_rate_limit
 
     @staticmethod
+    def _group_journal_source_name(
+        *, component_name: str, source_kind: str, index: int, total: int
+    ) -> str:
+        if component_name == "juju":
+            return source_kind if total == 1 else f"{source_kind}_{index}"
+        return (
+            f"{component_name}_{source_kind}"
+            if total == 1
+            else f"{component_name}_{source_kind}_{index}"
+        )
+
+    def _effective_log_source_groups(self) -> list[LogSourceGroup]:
+        groups = []
+        if self._systemd_units:
+            groups.append(
+                LogSourceGroup(
+                    component_name="juju",
+                    topology_labels=self._topology_labels,
+                    systemd_units=list(self._systemd_units),
+                )
+            )
+        groups.extend(self._log_source_groups)
+        return groups
+
+    def _render_group_journal_sources(self, group: LogSourceGroup) -> list[str]:
+        component_name = self._sanitize_component_name(group.component_name)
+        blocks: list[str] = []
+        for index, unit in enumerate(group.systemd_units):
+            source_name = self._group_journal_source_name(
+                component_name=component_name,
+                source_kind="journald",
+                index=index,
+                total=len(group.systemd_units),
+            )
+            blocks.append(
+                "\n".join(
+                    [
+                        f'loki.source.journal "{source_name}" {{',
+                        f'  matches = "{self._format_unit_match(unit)}"',
+                        "  relabel_rules = loki.relabel.journal.rules",
+                        f'  labels = {{log_source = "journal", systemd_unit = "{unit}"}}',
+                        f"  forward_to = [loki.process.{component_name}.receiver]",
+                        "}",
+                    ]
+                )
+            )
+        for index, match in enumerate(group.journal_match_expressions):
+            source_name = self._group_journal_source_name(
+                component_name=component_name,
+                source_kind="journal_match",
+                index=index,
+                total=len(group.journal_match_expressions),
+            )
+            blocks.append(
+                "\n".join(
+                    [
+                        f'loki.source.journal "{source_name}" {{',
+                        f'  matches = "{match}"',
+                        "  relabel_rules = loki.relabel.journal.rules",
+                        '  labels = {log_source = "journal"}',
+                        f"  forward_to = [loki.process.{component_name}.receiver]",
+                        "}",
+                    ]
+                )
+            )
+        return blocks
+
+    def _render_group_filelog_sources(self, group: LogSourceGroup) -> list[str]:
+        if not group.file_log_sources:
+            return []
+        component_name = self._sanitize_component_name(group.component_name)
+        matcher_name = f"{component_name}_filelogs"
+        return [
+            "\n".join(
+                [
+                    f'local.file_match "{matcher_name}" {{',
+                    "  path_targets = [",
+                    *self._render_file_targets(group.file_log_sources),
+                    "  ]",
+                    "}",
+                ]
+            ),
+            "\n".join(
+                [
+                    f'loki.source.file "{matcher_name}" {{',
+                    f"  targets    = local.file_match.{matcher_name}.targets",
+                    f"  forward_to = [loki.process.{component_name}.receiver]",
+                    "}",
+                ]
+            ),
+        ]
+
+    def _render_file_targets(self, file_log_sources: list[FileLogSource]) -> list[str]:
+        rendered: list[str] = []
+        for source in file_log_sources:
+            for include in source.include:
+                rendered.extend(
+                    [
+                        "    {",
+                        f'      __path__ = "{include}",',
+                        *(
+                            [
+                                "      __path_exclude__ = "
+                                f'"{self._combine_excludes(source.exclude)}",'
+                            ]
+                            if source.exclude
+                            else []
+                        ),
+                        *self._render_label_lines(source.attributes, indent="      "),
+                        "    },",
+                    ]
+                )
+        return rendered
+
+    @staticmethod
     def _sanitize_component_name(name: str) -> str:
         sanitized = re.sub(r"[^a-zA-Z0-9_]+", "_", name).strip("_").lower()
         return sanitized or "metrics"
+
+    @staticmethod
+    def _combine_excludes(excludes: list[str]) -> str:
+        return ",".join(excludes)
 
     @staticmethod
     def _render_key(key: str) -> str:

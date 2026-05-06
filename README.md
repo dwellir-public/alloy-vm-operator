@@ -10,9 +10,78 @@ Supported bases:
 Alloy now supports:
 
 - local self metrics and `prometheus.exporter.unix` host metrics
+- relation-driven machine-local workload telemetry over `machine-observability`
 - relation-driven scrape targets over `metrics-endpoint` (`prometheus_scrape`)
 - manual scrape targets over `manual-metrics-jobs`
 - forwarding metrics upstream over `send-remote-write` (`prometheus_remote_write`)
+
+## Machine Observability
+
+`alloy-vm` can act as a principal machine collector for multiple other
+principal charms on the same host.
+
+It consumes:
+
+- endpoint name: `machine-observability`
+- interface name: `machine_observability`
+
+This path is intended for shared-machine aggregation where one `alloy-vm` unit
+collects telemetry from multiple colocated principals such as `op-node` and
+`op-reth`.
+
+### Contract requirements
+
+`alloy-vm` requires the v2 `machine_observability` payload shape from related
+providers:
+
+- `schema_version: 2`
+- `source_topology`
+
+`source_topology` is required because `alloy-vm` must preserve the provider's
+own Juju identity when several principals share one machine.
+
+If a related provider still publishes v1 payloads without `source_topology`,
+`alloy-vm` blocks with a message like:
+
+- `machine-observability from <app> requires schema_version 2 with source_topology`
+
+### What gets rendered
+
+For each related principal, `alloy-vm` translates the payload into:
+
+- per-source `prometheus.scrape` jobs using the provider's topology labels
+- per-source `loki.process` blocks with the provider's topology labels
+- journald sources for declared `systemd_units`
+- journald sources for declared `journal_match_expressions`
+- file log sources for declared `log_files`
+
+This means one `alloy-vm` unit can forward:
+
+- `op-node` metrics and logs labeled as `op-node`
+- `op-reth` metrics and logs labeled as `op-reth`
+- its own local Alloy and host metrics labeled as `alloy-vm`
+
+### Example relations
+
+```bash
+juju relate alloy-vm:machine-observability op-node:machine-observability
+juju relate alloy-vm:machine-observability op-reth:machine-observability
+juju relate alloy-vm:send-remote-write mimir-vm:receive-remote-write
+juju relate alloy-vm:send-loki-logs loki-loadbalancer-vm:loki_push_api
+```
+
+Verify the related payloads on the Alloy unit:
+
+```bash
+juju show-unit alloy-vm/0
+```
+
+Verify the rendered config:
+
+```bash
+juju ssh alloy-vm/0 'grep -n "op_node_0" -A20 /etc/alloy/config.alloy'
+juju ssh alloy-vm/0 'grep -n "op_reth_0" -A20 /etc/alloy/config.alloy'
+```
 
 ## Grafana Cloud Integrator
 
@@ -102,6 +171,10 @@ The intended release-1 operating model is one Alloy unit doing the scraping and 
 For the shared observability deployment, Alloy forwards into one shared Mimir
 metrics store. Tenant-aware relation metadata is not required or published by
 `alloy-vm`; separation is done through metric labels such as Juju topology.
+
+For a validated local build and unit-test workflow for the
+`machine-observability` v2 consumer path, see
+[docs/build-test-deploy.md](docs/build-test-deploy.md).
 
 ### No-upstream behavior
 

@@ -12,11 +12,15 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import ops
+from charms.dwellir_observability.v0.machine_observability import (
+    load_machine_observability_payload,
+)
 from charms.grafana_cloud_integrator.v0.cloud_config_requirer import GrafanaCloudConfigRequirer
 from charms.loki_k8s.v1.loki_push_api import LokiPushApiConsumer
 from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointConsumer
 from charms.prometheus_k8s.v1.prometheus_remote_write import PrometheusRemoteWriteConsumer
 from cosl import JujuTopology
+from pydantic import ValidationError
 
 import alloy
 from config_builder import (
@@ -24,10 +28,15 @@ from config_builder import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_PACKAGE_CONFIG_BACKUP_PATH,
     ConfigBuilder,
+    LogSourceGroup,
     MetricsScrapeJob,
     ScrapeTarget,
 )
 from grafanacloud_connectivity import probe_endpoint
+from machine_observability_sources import (
+    MachineObservabilitySource,
+    translate_machine_observability_payload,
+)
 from manual_metrics_jobs import ManualMetricsJobsError, parse_manual_metrics_jobs
 from outbound_endpoints import OutboundEndpoint, dedupe_endpoints
 
@@ -98,6 +107,12 @@ class AlloyCharm(ops.CharmBase):
             self._remote_write_consumer.on.endpoints_changed,
             self._on_metrics_relation_changed,
         )
+        for event in (
+            self.on["machine-observability"].relation_joined,
+            self.on["machine-observability"].relation_changed,
+            self.on["machine-observability"].relation_broken,
+        ):
+            self.framework.observe(event, self._on_observability_endpoint_changed)
         for event in (
             self.on["grafana-cloud-config"].relation_joined,
             self.on["grafana-cloud-config"].relation_changed,
@@ -234,6 +249,9 @@ class AlloyCharm(ops.CharmBase):
         except ManualMetricsJobsError as exc:
             self.unit.status = ops.BlockedStatus(str(exc))
             return None
+        contract_error = self._machine_observability_contract_error()
+        if contract_error is not None:
+            return ops.BlockedStatus(contract_error)
         config_text = self._render_config_text(manual_metrics_jobs=manual_metrics_jobs)
         desired_custom_args = self._desired_custom_args()
         live_debugging = self._live_debugging_enabled()
@@ -396,6 +414,7 @@ class AlloyCharm(ops.CharmBase):
                     "charm_name": "juju_charm",
                 }
             ),
+            log_source_groups=self._machine_observability_log_source_groups(),
         )
         return f"{alloy.GENERATED_CONFIG_HEADER}{builder.build()}"
 
@@ -624,7 +643,11 @@ class AlloyCharm(ops.CharmBase):
         """Return rendered scrape jobs only when an upstream exists."""
         if not self._remote_write_endpoint_urls():
             return []
-        return [*self._translated_metrics_scrape_jobs(), *manual_metrics_jobs]
+        return [
+            *self._translated_metrics_scrape_jobs(),
+            *manual_metrics_jobs,
+            *self._machine_observability_metrics_scrape_jobs(),
+        ]
 
     def _manual_metrics_scrape_jobs(self) -> list[MetricsScrapeJob]:
         """Parse manual operator-defined scrape jobs from charm config."""
@@ -867,7 +890,9 @@ class AlloyCharm(ops.CharmBase):
     ) -> ops.StatusBase:
         """Return the desired post-config status for the current relation state."""
         if (
-            self._metrics_consumer.jobs() or manual_metrics_jobs
+            self._metrics_consumer.jobs()
+            or manual_metrics_jobs
+            or self._machine_observability_metrics_scrape_jobs()
         ) and not self._remote_write_endpoint_urls():
             return ops.WaitingStatus(
                 "Waiting for remote write before enabling manual or related metrics scraping"
@@ -892,6 +917,57 @@ class AlloyCharm(ops.CharmBase):
             return []
         tokens = raw.replace("\n", ",").split(",")
         return [token.strip() for token in tokens if token.strip()]
+
+    def _machine_observability_contract_error(self) -> str | None:
+        """Return the first invalid machine-observability contract error."""
+        for relation in self.model.relations.get("machine-observability", []):
+            remote_app = relation.app
+            if remote_app is None:
+                continue
+            raw_payload = relation.data[remote_app].get("payload", "").strip()
+            if not raw_payload:
+                continue
+            try:
+                payload = load_machine_observability_payload(relation)
+            except (ValidationError, json.JSONDecodeError) as exc:
+                return (
+                    f"machine-observability payload validation failed for {remote_app.name}: {exc}"
+                )
+            if payload.schema_version != 2 or payload.source_topology is None:
+                return (
+                    "machine-observability from "
+                    f"{remote_app.name} requires schema_version 2 with source_topology"
+                )
+        return None
+
+    def _machine_observability_sources(self) -> list[MachineObservabilitySource]:
+        """Return translated machine-observability sources from related principals."""
+        sources: list[MachineObservabilitySource] = []
+        for relation in self.model.relations.get("machine-observability", []):
+            remote_app = relation.app
+            if remote_app is None:
+                continue
+            raw_payload = relation.data[remote_app].get("payload", "").strip()
+            if not raw_payload:
+                continue
+            payload = load_machine_observability_payload(relation)
+            sources.append(translate_machine_observability_payload(payload))
+        return sources
+
+    def _machine_observability_metrics_scrape_jobs(self) -> list[MetricsScrapeJob]:
+        """Return translated metrics scrape jobs from machine-observability relations."""
+        jobs: list[MetricsScrapeJob] = []
+        for source in self._machine_observability_sources():
+            jobs.extend(source.metrics_scrape_jobs)
+        return jobs
+
+    def _machine_observability_log_source_groups(self) -> list[LogSourceGroup]:
+        """Return translated log source groups from machine-observability relations."""
+        groups: list[LogSourceGroup] = []
+        for source in self._machine_observability_sources():
+            if source.log_source_group is not None:
+                groups.append(source.log_source_group)
+        return groups
 
 
 if __name__ == "__main__":

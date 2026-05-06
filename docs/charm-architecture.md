@@ -4,6 +4,7 @@
 
 `alloy-vm-operator` manages a Grafana Alloy machine deployment that can:
 
+- receive machine-local workload telemetry over `machine-observability`
 - receive scrape targets over `metrics-endpoint`
 - receive manual scrape targets from the `manual-metrics-jobs` config option
 - forward metrics over `send-remote-write`
@@ -15,6 +16,8 @@
 [`src/alloy.py`](/home/erik/Loki-project/alloy-vm-operator/src/alloy.py), and Alloy config
 assembly stays in
 [`src/config_builder.py`](/home/erik/Loki-project/alloy-vm-operator/src/config_builder.py).
+Machine-observability payload translation stays in
+[`src/machine_observability_sources.py`](/home/erik/dwellir-public/alloy-vm-operator/src/machine_observability_sources.py).
 
 ## Metrics Flow
 
@@ -33,6 +36,11 @@ option. Those jobs are parsed by [`src/manual_metrics_jobs.py`](/home/erik/dwell
 translated into the same `MetricsScrapeJob` model as relation-derived jobs, and merged into the
 rendered Alloy config only when a `send-remote-write` endpoint exists.
 
+For shared-machine aggregation, principal charms can instead publish
+`machine-observability` payloads. `alloy-vm` requires the v2 contract with
+`source_topology`, translates those payloads into the same internal
+`MetricsScrapeJob` shape, and renders them into the shared remote-write path.
+
 By default, Alloy preserves the generated Prometheus job name from the scrape relation. A provider
 can optionally publish a per-unit `metrics_job_name` relation key, and Alloy will use that value as
 the final metric `job` label only for that unit. This is used by `lxd-host` so the metric `job`
@@ -47,11 +55,25 @@ This override is intentionally opt-in:
 
 ## Logging Flow
 
-For logs, Alloy can either forward its own local journal collection or accept
-remote syslog traffic through `syslog-receiver`. Outbound Loki sinks can come
-from `send-loki-logs` or `grafana-cloud-config`, and when both are present the
-rendered `loki.write` block forwards to both destinations. Grafana Cloud Loki
-uses signal-specific credentials from the relation when available.
+For logs, Alloy can:
+
+- forward local host journald selections from charm config
+- accept remote syslog traffic through `syslog-receiver`
+- consume related principal workload logs over `machine-observability`
+
+Outbound Loki sinks can come from `send-loki-logs` or
+`grafana-cloud-config`, and when both are present the rendered `loki.write`
+block forwards to both destinations. Grafana Cloud Loki uses signal-specific
+credentials from the relation when available.
+
+The important topology distinction is:
+
+- host-configured journal capture keeps `alloy-vm` topology
+- `machine-observability` log inputs render one `loki.process` per related
+  principal and apply that provider's `source_topology`
+
+This is what allows one `alloy-vm` unit to aggregate `op-node` and `op-reth`
+on the same machine without collapsing both streams into `alloy-vm` labels.
 
 During `update-status`, the charm probes Grafana Cloud metrics and logs
 endpoints and surfaces connectivity failures as a blocked status. Successful

@@ -124,6 +124,10 @@ parts:
       - astral-uv
 
 requires:
+  machine-observability:
+    interface: machine_observability
+    optional: true
+    description: Collect machine-local workload telemetry from related principal charms.
   send-loki-logs:
     interface: loki_push_api
     optional: true
