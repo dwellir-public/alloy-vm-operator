@@ -25,14 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
-# The unique Charmhub library identifier, never change it
 LIBID = "0b7d5c45f19b4b4b9876db265b31af48"
-
-# Increment this major API version when introducing breaking changes
 LIBAPI = 0
-
-# Increment this PATCH version before using `charmcraft publish-lib` or reset
-# to 0 if you are raising the major API version
 LIBPATCH = 4
 
 DEFAULT_RELATION_NAME = "machine-observability"
@@ -83,7 +77,9 @@ class MachineObservabilityPayload(BaseModel):
     schema_version: Literal[
         MACHINE_OBSERVABILITY_SCHEMA_VERSION_V1,
         MACHINE_OBSERVABILITY_SCHEMA_VERSION_V2,
-    ] = MACHINE_OBSERVABILITY_SCHEMA_VERSION_V1
+    ] = (
+        MACHINE_OBSERVABILITY_SCHEMA_VERSION_V1
+    )
     charm_name: str = ""
     source_topology: SourceTopology | None = None
     metrics_endpoints: list[MetricsEndpoint] = Field(default_factory=list)
@@ -260,34 +256,38 @@ class MachineObservabilityConsumer(Object):
     def get_payload(
         self, relation: Optional[Relation] = None
     ) -> MachineObservabilityPayload:
-        """Return the payload for one relation or the first available relation."""
+        """Return the validated payload for a relation or the default empty payload."""
 
-        if relation is None:
-            relation = self.model.get_relation(self._relation_name)
+        relation = relation or self._relation
         if relation is None:
             return MachineObservabilityPayload()
 
-        payload = self._load_payload(relation)
+        payload = self._validated_payload(relation)
         return payload if payload is not None else MachineObservabilityPayload()
 
-    def _validated_payload(self, relation: Relation) -> bool:
-        try:
-            load_machine_observability_payload(relation)
-        except ValidationError as exc:
-            logger.warning("machine-observability payload validation failed: %s", exc)
-            self.on.validation_error.emit(str(exc))  # pyright: ignore
-            return False
-        except json.JSONDecodeError as exc:
-            logger.warning("machine-observability payload JSON invalid: %s", exc)
-            self.on.validation_error.emit(str(exc))  # pyright: ignore
-            return False
-        return True
+    @property
+    def relations(self) -> list[Relation]:
+        """All relations using the configured relation name."""
 
-    def _load_payload(
-        self,
-        relation: Relation,
+        return list(self._charm.model.relations[self._relation_name])
+
+    @property
+    def _relation(self) -> Optional[Relation]:
+        """The single relation for this endpoint when present."""
+
+        relations = self.relations
+        return relations[0] if relations else None
+
+    def _validated_payload(
+        self, relation: Relation
     ) -> Optional[MachineObservabilityPayload]:
         try:
             return load_machine_observability_payload(relation)
-        except (ValidationError, json.JSONDecodeError):
+        except (ValidationError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Invalid machine-observability payload on relation %s: %s",
+                relation.id,
+                exc,
+            )
+            self.on.validation_error.emit(message=str(exc))  # pyright: ignore
             return None
