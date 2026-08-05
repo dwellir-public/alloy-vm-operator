@@ -424,3 +424,66 @@ def test_no_copies_renders_only_the_collectors_own_pipeline():
 
     assert "prometheus.relabel" not in rendered
     assert "  forward_to      = [prometheus.remote_write.metrics.receiver]" in rendered
+
+
+def test_partial_copy_clears_the_labels_it_does_not_set():
+    partial_copy = HostMetricsCopy(
+        component_name="partial",
+        topology_labels={
+            "juju_application": "op-node",
+            "juju_unit": "op-node/0",
+        },
+    )
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[partial_copy],
+    ).build()
+
+    block = rendered.split('prometheus.relabel "partial" {', 1)[1].split("\n}", 1)[0]
+
+    assert '    target_label = "juju_application"\n    replacement  = "op-node"' in block
+    assert '    target_label = "juju_unit"\n    replacement  = "op-node/0"' in block
+    assert '    action = "labeldrop"\n    regex  = "juju_model"' in block
+    assert '    action = "labeldrop"\n    regex  = "juju_model_uuid"' in block
+    assert '    action = "labeldrop"\n    regex  = "juju_charm"' in block
+
+
+def test_empty_copy_renders_no_component_and_no_forward_to_entry():
+    empty_copy = HostMetricsCopy(component_name="empty", topology_labels={})
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[empty_copy],
+    ).build()
+
+    assert 'prometheus.relabel "empty" {' not in rendered
+    assert "prometheus.relabel.empty.receiver" not in rendered
+
+
+def test_fully_populated_copy_still_renders_only_replace_rules():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_NODE_COPY],
+    ).build()
+
+    block = rendered.split('prometheus.relabel "op_node_0" {', 1)[1].split("\n}", 1)[0]
+
+    assert block.count("  rule {") == 5
+    assert block.count("replacement  =") == 5
+    assert "labeldrop" not in block
+
+
+def test_copies_that_sanitize_to_the_same_name_render_once():
+    duplicate_a = HostMetricsCopy(
+        component_name="op node",
+        topology_labels={"juju_application": "op-node", "juju_unit": "op-node/0"},
+    )
+    duplicate_b = HostMetricsCopy(
+        component_name="op_node",
+        topology_labels={"juju_application": "op-node-dup", "juju_unit": "op-node-dup/0"},
+    )
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[duplicate_a, duplicate_b],
+    ).build()
+
+    assert rendered.count('prometheus.relabel "op_node" {') == 1

@@ -123,10 +123,32 @@ class ConfigBuilder:
         self._receiver_hostname = receiver_hostname
         self._receiver_ip = receiver_ip
         self._topology_labels = topology_labels
-        self._host_metrics_copies = sorted(
-            host_metrics_copies or [], key=lambda copy: copy.component_name
+        self._host_metrics_copies = self._deduplicate_host_metrics_copies(
+            host_metrics_copies or []
         )
         self._log_source_groups = log_source_groups or []
+
+    @classmethod
+    def _deduplicate_host_metrics_copies(
+        cls, copies: list[HostMetricsCopy]
+    ) -> list[HostMetricsCopy]:
+        """Sort copies by their sanitized component name, dropping later duplicates.
+
+        Two copies whose names sanitize to the same string would otherwise render
+        two components with identical names, which Alloy rejects at load time.
+        """
+
+        def sanitized_name(copy: HostMetricsCopy) -> str:
+            return cls._sanitize_component_name(copy.component_name)
+
+        deduplicated: list[HostMetricsCopy] = []
+        seen_names: set[str] = set()
+        for copy in sorted(copies, key=sanitized_name):
+            name = sanitized_name(copy)
+            if name not in seen_names:
+                seen_names.add(name)
+                deduplicated.append(copy)
+        return deduplicated
 
     @staticmethod
     def _normalize_endpoints(
@@ -270,8 +292,16 @@ class ConfigBuilder:
         )
 
     def _active_host_metrics_copies(self) -> list[HostMetricsCopy]:
-        """Return the copies worth rendering, which needs somewhere to send them."""
-        return self._host_metrics_copies if self._remote_write_endpoints else []
+        """Return the copies worth rendering.
+
+        A copy needs somewhere to send its samples, which requires a remote-write
+        upstream, and something to say about them, which requires at least one
+        non-empty topology label. Otherwise it renders no component and attributes
+        nothing to anyone.
+        """
+        if not self._remote_write_endpoints:
+            return []
+        return [copy for copy in self._host_metrics_copies if any(copy.topology_labels.values())]
 
     def _host_metrics_forward_to(self) -> str:
         """Return the receivers for the one scrape of the exporter.
@@ -294,11 +324,47 @@ class ConfigBuilder:
             f'prometheus.relabel "{self._sanitize_component_name(copy.component_name)}" {{',
             f"  forward_to = {self._metrics_forward_to()}",
         ]
-        rules = self._render_topology_rules(copy.topology_labels)
+        rules = self._render_copy_topology_rules(copy.topology_labels)
         if rules:
             lines.extend(["", *rules])
         lines.append("}")
         return "\n".join(lines)
+
+    def _render_copy_topology_rules(self, labels: dict[str, str]) -> list[str]:
+        """Render blank-line separated relabel rules for a host metrics copy.
+
+        Samples reaching a copy have already been stamped with the collector's
+        topology by ``discovery.relabel "host_metrics"``. Skipping a key the copy
+        does not set would silently keep the collector's value, so every key gets
+        a rule: a ``replace`` where the copy has a value, and a ``labeldrop`` that
+        removes the label where it does not.
+        """
+        rules: list[str] = []
+        for key in self._topology_label_order():
+            value = labels.get(key)
+            if value:
+                rules.extend(
+                    [
+                        "  rule {",
+                        f'    target_label = "{key}"',
+                        f"    replacement  = {json.dumps(value)}",
+                        "  }",
+                        "",
+                    ]
+                )
+            else:
+                rules.extend(
+                    [
+                        "  rule {",
+                        '    action = "labeldrop"',
+                        f'    regex  = "{key}"',
+                        "  }",
+                        "",
+                    ]
+                )
+        if rules:
+            rules.pop()
+        return rules
 
     def _render_host_metrics_scrape(self) -> str:
         return "\n".join(
