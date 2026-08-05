@@ -1001,6 +1001,9 @@ Expect one entry per unit on the machine, including `alloy-vm/0`.
   next relation-changed hook.
 - **`prometheus.relabel` rules with no `source_labels`.** The copies stamp labels
   with `target_label` + `replacement` and no `source_labels`, the same shape the
-  existing `discovery.relabel` blocks already use. If Alloy ever rejects that
-  shape in `prometheus.relabel` specifically, `alloy fmt` fails validation during
-  `_configure` and the charm keeps the previous config — visible, not silent.
+  existing `discovery.relabel` blocks already use. `alloy fmt` only parses and
+  formats the config; it does not evaluate expressions or validate component
+  argument schemas. If Alloy ever rejects that shape in `prometheus.relabel`
+  specifically, the rendered config still passes `_configure`'s validation and
+  gets written, and the rejection surfaces as a failed Alloy restart rather than
+  a preserved previous config.

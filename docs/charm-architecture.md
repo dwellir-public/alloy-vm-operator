@@ -73,7 +73,8 @@ The important topology distinction is:
   principal and apply that provider's `source_topology`
 - host metrics are collected once and copied per related workload: each copy
   carries that provider's `source_topology`, and the `alloy-vm` unit keeps a copy
-  under its own topology
+  under its own topology; both local scrapes, including Alloy's own metrics, run
+  at the same pinned 15s interval as the copies
 
 This is what allows one `alloy-vm` unit to aggregate `op-node` and `op-reth`
 on the same machine without collapsing both streams into `alloy-vm` labels.

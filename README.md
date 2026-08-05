@@ -88,7 +88,8 @@ Attribution is accurate when each related application has one unit per machine.
 The payload is application-scoped, so a provider with units spread across machines
 publishes a single unit name to all of them.
 
-The job scrapes every 15s. Host metrics are cheap and their value is in the
+Both local scrapes run every 15s, so Alloy's own metrics from `127.0.0.1:6987`
+sample at that rate too. Host metrics are cheap and their value is in the
 resolution, so the interval is fixed rather than left at Alloy's one-minute
 default.
 
