@@ -323,6 +323,9 @@ def test_host_metrics_and_alloy_self_render_as_separate_components():
     assert 'discovery.relabel "local_metrics" {' not in rendered
     assert 'prometheus.scrape "default" {' not in rendered
 
+    alloy_self = rendered.split('discovery.relabel "alloy_self" {', 1)[1].split("\n}", 1)[0]
+    assert '    job         = "alloy",' in alloy_self
+
 
 def test_the_exporter_targets_do_not_reach_the_alloy_self_component():
     rendered = _builder().build()
