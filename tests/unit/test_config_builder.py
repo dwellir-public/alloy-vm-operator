@@ -3,7 +3,7 @@
 
 import json
 
-from config_builder import ConfigBuilder, MetricsScrapeJob, ScrapeTarget
+from config_builder import ConfigBuilder, HostMetricsCopy, MetricsScrapeJob, ScrapeTarget
 from outbound_endpoints import OutboundEndpoint
 
 TOPOLOGY = {
@@ -350,3 +350,77 @@ def test_both_local_components_carry_the_charm_topology_labels():
     for component in ('discovery.relabel "host_metrics" {', 'discovery.relabel "alloy_self" {'):
         block = rendered.split(component, 1)[1].split("\n}", 1)[0]
         assert '    target_label = "juju_unit"\n    replacement  = "alloy/0"' in block
+
+
+OP_NODE_COPY = HostMetricsCopy(
+    component_name="op-node_0",
+    topology_labels={
+        "juju_model": "base-mainnet",
+        "juju_model_uuid": "00000000-0000-4000-8000-000000000002",
+        "juju_application": "op-node",
+        "juju_unit": "op-node/0",
+        "juju_charm": "op-node",
+    },
+)
+OP_RETH_COPY = HostMetricsCopy(
+    component_name="op-reth_2",
+    topology_labels={
+        "juju_model": "base-mainnet",
+        "juju_model_uuid": "00000000-0000-4000-8000-000000000002",
+        "juju_application": "op-reth",
+        "juju_unit": "op-reth/2",
+        "juju_charm": "op-reth",
+    },
+)
+
+
+def test_each_copy_renders_a_relabel_component_with_its_own_topology():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_RETH_COPY, OP_NODE_COPY],
+    ).build()
+
+    op_node = rendered.split('prometheus.relabel "op_node_0" {', 1)[1].split("\n}", 1)[0]
+
+    assert "  forward_to = [prometheus.remote_write.metrics.receiver]" in op_node
+    assert '    target_label = "juju_unit"\n    replacement  = "op-node/0"' in op_node
+    assert '    target_label = "juju_application"\n    replacement  = "op-node"' in op_node
+    assert '    target_label = "juju_charm"\n    replacement  = "op-node"' in op_node
+    assert 'prometheus.relabel "op_reth_2" {' in rendered
+
+
+def test_the_host_scrape_forwards_to_remote_write_and_every_copy():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_RETH_COPY, OP_NODE_COPY],
+    ).build()
+
+    assert (
+        "  forward_to      = [prometheus.remote_write.metrics.receiver, "
+        "prometheus.relabel.op_node_0.receiver, prometheus.relabel.op_reth_2.receiver]"
+    ) in rendered
+
+
+def test_the_alloy_self_scrape_never_forwards_to_a_copy():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_NODE_COPY],
+    ).build()
+
+    alloy_self = rendered.split('prometheus.scrape "alloy_self" {', 1)[1].split("\n}", 1)[0]
+
+    assert "  forward_to      = [prometheus.remote_write.metrics.receiver]" in alloy_self
+
+
+def test_copies_are_dropped_without_a_remote_write_upstream():
+    rendered = _builder(host_metrics_copies=[OP_NODE_COPY]).build()
+
+    assert "prometheus.relabel" not in rendered
+    assert "  forward_to      = []" in rendered
+
+
+def test_no_copies_renders_only_the_collectors_own_pipeline():
+    rendered = _builder(remote_write_endpoints=["http://mimir:9009/api/v1/push"]).build()
+
+    assert "prometheus.relabel" not in rendered
+    assert "  forward_to      = [prometheus.remote_write.metrics.receiver]" in rendered

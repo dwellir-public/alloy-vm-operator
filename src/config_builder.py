@@ -52,6 +52,19 @@ class MetricsScrapeJob:
 
 
 @dataclass(frozen=True)
+class HostMetricsCopy:
+    """One extra copy of the host metrics, labelled for a workload on this machine.
+
+    Host metrics describe the machine, and several Juju workloads can share one.
+    Each copy re-stamps the single scrape's samples with one workload's own
+    topology, so its metrics and the machine's arrive under the same labels.
+    """
+
+    component_name: str
+    topology_labels: dict[str, str]
+
+
+@dataclass(frozen=True)
 class FileLogSource:
     """One translated file log source."""
 
@@ -92,6 +105,7 @@ class ConfigBuilder:
         receiver_hostname: str = "",
         receiver_ip: str = "",
         topology_labels: dict[str, str],
+        host_metrics_copies: list[HostMetricsCopy] | None = None,
         log_source_groups: list[LogSourceGroup] | None = None,
     ):
         self._loki_endpoints = loki_endpoints
@@ -109,6 +123,9 @@ class ConfigBuilder:
         self._receiver_hostname = receiver_hostname
         self._receiver_ip = receiver_ip
         self._topology_labels = topology_labels
+        self._host_metrics_copies = sorted(
+            host_metrics_copies or [], key=lambda copy: copy.component_name
+        )
         self._log_source_groups = log_source_groups or []
 
     @staticmethod
@@ -129,7 +146,7 @@ class ConfigBuilder:
         return "\n".join(blocks).rstrip() + "\n"
 
     def _render_base_blocks(self) -> list[str]:
-        return [
+        blocks = [
             self._render_logging(),
             "",
             self._render_unix_exporter(),
@@ -143,6 +160,9 @@ class ConfigBuilder:
             "",
             self._render_alloy_self_scrape(),
         ]
+        for copy in self._active_host_metrics_copies():
+            blocks.extend(["", self._render_host_metrics_copy(copy)])
+        return blocks
 
     def _render_metrics_blocks(self) -> list[str]:
         if not (self._remote_write_endpoints and self._metrics_scrape_jobs):
@@ -249,6 +269,37 @@ class ConfigBuilder:
             ]
         )
 
+    def _active_host_metrics_copies(self) -> list[HostMetricsCopy]:
+        """Return the copies worth rendering, which needs somewhere to send them."""
+        return self._host_metrics_copies if self._remote_write_endpoints else []
+
+    def _host_metrics_forward_to(self) -> str:
+        """Return the receivers for the one scrape of the exporter.
+
+        Remote write takes the samples labelled for this unit; each copy's
+        relabel component takes the same samples and re-stamps them.
+        """
+        receivers: list[str] = []
+        if self._remote_write_endpoints:
+            receivers.append(f"prometheus.remote_write.{REMOTE_WRITE_COMPONENT_NAME}.receiver")
+        receivers.extend(
+            f"prometheus.relabel.{self._sanitize_component_name(copy.component_name)}.receiver"
+            for copy in self._active_host_metrics_copies()
+        )
+        return f"[{', '.join(receivers)}]"
+
+    def _render_host_metrics_copy(self, copy: HostMetricsCopy) -> str:
+        """Render one relabel component that re-stamps the exporter's samples."""
+        lines = [
+            f'prometheus.relabel "{self._sanitize_component_name(copy.component_name)}" {{',
+            f"  forward_to = {self._metrics_forward_to()}",
+        ]
+        rules = self._render_topology_rules(copy.topology_labels)
+        if rules:
+            lines.extend(["", *rules])
+        lines.append("}")
+        return "\n".join(lines)
+
     def _render_host_metrics_scrape(self) -> str:
         return "\n".join(
             [
@@ -256,7 +307,7 @@ class ConfigBuilder:
                 "  targets         = discovery.relabel.host_metrics.output",
                 '  job_name        = "alloy-local"',
                 f'  scrape_interval = "{LOCAL_METRICS_SCRAPE_INTERVAL}"',
-                f"  forward_to      = {self._metrics_forward_to()}",
+                f"  forward_to      = {self._host_metrics_forward_to()}",
                 "}",
             ]
         )
