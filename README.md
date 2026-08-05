@@ -59,7 +59,43 @@ This means one `alloy-vm` unit can forward:
 
 - `op-node` metrics and logs labeled as `op-node`
 - `op-reth` metrics and logs labeled as `op-reth`
-- its own local Alloy and host metrics labeled as `alloy-vm`
+- its own local Alloy and host metrics labeled as `alloy-vm`, plus one copy of the
+  host metrics per related workload under that workload's labels (see below)
+
+### Host metric attribution
+
+`alloy-vm` collects host metrics for the whole machine rather than for itself, so
+every workload related over `machine-observability` receives its own copy of them,
+labelled with that workload's Juju topology:
+
+- one copy per related unit, carrying that unit's `juju_model`,
+  `juju_model_uuid`, `juju_application`, `juju_unit` and `juju_charm`
+- one copy for the `alloy-vm` unit itself, carrying its own topology, exactly as
+  before
+- every copy keeps `job = "alloy-local"`, so existing queries still select host
+  metrics; the copies differ only in their `juju_*` labels
+
+A machine running `op-node/0` and `op-reth/2` therefore reports three sets of host
+metrics: one per workload and one for the collector. That multiplies host-metric
+series and remote-write volume by the number of related units plus one.
+
+The exporter is scraped once regardless of how many units share the machine —
+the samples are duplicated in Alloy's pipeline, not collected repeatedly. Copies
+are rendered only when a remote-write upstream is related; without one there is
+nowhere to send them.
+
+Attribution is accurate when each related application has one unit per machine.
+The payload is application-scoped, so a provider with units spread across machines
+publishes a single unit name to all of them.
+
+The job scrapes every 15s. Host metrics are cheap and their value is in the
+resolution, so the interval is fixed rather than left at Alloy's one-minute
+default.
+
+Only host metrics are copied this way. Per-source metrics jobs and every log
+stream, including host journal logs, keep the labels of the workload that declared
+them, and Alloy's own metrics from `127.0.0.1:6987` stay on the `alloy-vm` unit's
+topology alone.
 
 ### Example relations
 

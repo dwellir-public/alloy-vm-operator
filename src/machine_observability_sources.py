@@ -6,7 +6,13 @@ from dataclasses import dataclass
 
 from charms.dwellir_observability.v0.machine_observability import MachineObservabilityPayload
 
-from config_builder import FileLogSource, LogSourceGroup, MetricsScrapeJob, ScrapeTarget
+from config_builder import (
+    FileLogSource,
+    HostMetricsCopy,
+    LogSourceGroup,
+    MetricsScrapeJob,
+    ScrapeTarget,
+)
 
 
 @dataclass(frozen=True)
@@ -15,6 +21,7 @@ class MachineObservabilitySource:
 
     metrics_scrape_jobs: list[MetricsScrapeJob]
     log_source_group: LogSourceGroup | None = None
+    host_metrics_copy: HostMetricsCopy | None = None
 
 
 def translate_machine_observability_payload(
@@ -77,6 +84,10 @@ def translate_machine_observability_payload(
     return MachineObservabilitySource(
         metrics_scrape_jobs=metrics_scrape_jobs,
         log_source_group=log_source_group,
+        host_metrics_copy=HostMetricsCopy(
+            component_name=_topology_component_name(topology.application, topology.unit),
+            topology_labels=dict(labels),
+        ),
     )
 
 
