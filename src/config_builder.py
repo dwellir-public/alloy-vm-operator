@@ -21,6 +21,10 @@ DEFAULT_PACKAGE_CONFIG_BACKUP_PATH = os.path.join(
 DEFAULT_CONFIG_BACKUP_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.alloy.bak")
 REMOTE_WRITE_COMPONENT_NAME = "metrics"
 REMOTE_WRITE_MAX_KEEPALIVE = "30m"
+
+# Host metrics are cheap and their value is in the resolution, so the local
+# scrape is pinned here rather than inheriting Alloy's one-minute default.
+LOCAL_METRICS_SCRAPE_INTERVAL = "15s"
 DEFAULT_SYSLOG_ACCESS_DROP_EXPRESSIONS = [
     '.*"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE) .* HTTP/.*"',
 ]
@@ -130,10 +134,14 @@ class ConfigBuilder:
             "",
             self._render_unix_exporter(),
             "",
-            self._render_local_metrics_relabel(),
+            self._render_host_metrics_relabel(),
+            "",
+            self._render_alloy_self_relabel(),
             "",
             *([self._render_remote_write(), ""] if self._remote_write_endpoints else []),
-            self._render_local_metrics_scrape(),
+            self._render_host_metrics_scrape(),
+            "",
+            self._render_alloy_self_scrape(),
         ]
 
     def _render_metrics_blocks(self) -> list[str]:
@@ -193,10 +201,11 @@ class ConfigBuilder:
             ]
         )
 
-    def _render_local_metrics_relabel(self) -> str:
-        rules = []
+    def _render_topology_rules(self, labels: dict[str, str]) -> list[str]:
+        """Render blank-line separated relabel rules that stamp topology labels."""
+        rules: list[str] = []
         for key in self._topology_label_order():
-            value = self._topology_labels.get(key)
+            value = labels.get(key)
             if value:
                 rules.extend(
                     [
@@ -209,28 +218,57 @@ class ConfigBuilder:
                 )
         if rules:
             rules.pop()
+        return rules
+
+    def _render_host_metrics_relabel(self) -> str:
         return "\n".join(
             [
-                'discovery.relabel "local_metrics" {',
-                "  targets = array.concat(",
-                "    prometheus.exporter.unix.default.targets,",
-                "    [{",
-                '      job         = "alloy",',
-                '      __address__ = "127.0.0.1:6987",',
-                "    }],",
-                "  )",
-                *(rules or [""]),
+                'discovery.relabel "host_metrics" {',
+                "  targets = prometheus.exporter.unix.default.targets",
+                *(self._render_topology_rules(self._topology_labels) or [""]),
                 "}",
             ]
         )
 
-    def _render_local_metrics_scrape(self) -> str:
+    def _render_alloy_self_relabel(self) -> str:
+        """Render the relabel for Alloy's own metrics.
+
+        The target map keeps its explicit ``job`` key, so Alloy's self-metrics
+        carry the same job label they did when this target shared a component
+        with the exporter's.
+        """
         return "\n".join(
             [
-                'prometheus.scrape "default" {',
-                "  targets    = discovery.relabel.local_metrics.output",
-                '  job_name   = "alloy-local"',
-                f"  forward_to = {self._metrics_forward_to()}",
+                'discovery.relabel "alloy_self" {',
+                "  targets = [{",
+                '    job         = "alloy",',
+                '    __address__ = "127.0.0.1:6987",',
+                "  }]",
+                *(self._render_topology_rules(self._topology_labels) or [""]),
+                "}",
+            ]
+        )
+
+    def _render_host_metrics_scrape(self) -> str:
+        return "\n".join(
+            [
+                'prometheus.scrape "host_metrics" {',
+                "  targets         = discovery.relabel.host_metrics.output",
+                '  job_name        = "alloy-local"',
+                f'  scrape_interval = "{LOCAL_METRICS_SCRAPE_INTERVAL}"',
+                f"  forward_to      = {self._metrics_forward_to()}",
+                "}",
+            ]
+        )
+
+    def _render_alloy_self_scrape(self) -> str:
+        return "\n".join(
+            [
+                'prometheus.scrape "alloy_self" {',
+                "  targets         = discovery.relabel.alloy_self.output",
+                '  job_name        = "alloy-local"',
+                f'  scrape_interval = "{LOCAL_METRICS_SCRAPE_INTERVAL}"',
+                f"  forward_to      = {self._metrics_forward_to()}",
                 "}",
             ]
         )

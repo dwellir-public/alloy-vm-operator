@@ -40,10 +40,10 @@ def _builder(**kwargs) -> ConfigBuilder:
 def test_local_metrics_drop_without_remote_write():
     rendered = _builder().build()
 
-    assert 'discovery.relabel "local_metrics" {' in rendered
-    assert 'prometheus.scrape "default" {' in rendered
-    assert 'job_name   = "alloy-local"' in rendered
-    assert "forward_to = []" in rendered
+    assert 'discovery.relabel "host_metrics" {' in rendered
+    assert 'prometheus.scrape "host_metrics" {' in rendered
+    assert 'job_name        = "alloy-local"' in rendered
+    assert "forward_to      = []" in rendered
     assert 'prometheus.remote_write "metrics" {' not in rendered
 
 
@@ -53,7 +53,7 @@ def test_local_metrics_forward_to_remote_write_when_endpoint_exists():
     assert 'prometheus.remote_write "metrics" {' in rendered
     assert 'url = "http://10.0.0.10:9009/api/v1/push"' in rendered
     assert 'max_keepalive_time = "30m"' in rendered
-    assert "forward_to = [prometheus.remote_write.metrics.receiver]" in rendered
+    assert "forward_to      = [prometheus.remote_write.metrics.receiver]" in rendered
 
 
 def test_remote_write_renders_basic_auth_and_tls_config():
@@ -309,3 +309,41 @@ def test_host_journal_source_drops_without_loki_relation():
         'loki.process "juju" {', 1
     )[0]
     assert "juju_model" not in host_section
+
+
+def test_host_metrics_and_alloy_self_render_as_separate_components():
+    rendered = _builder(remote_write_endpoints=["http://mimir:9009/api/v1/push"]).build()
+
+    assert 'discovery.relabel "host_metrics" {' in rendered
+    assert "  targets = prometheus.exporter.unix.default.targets" in rendered
+    assert 'discovery.relabel "alloy_self" {' in rendered
+    assert '    __address__ = "127.0.0.1:6987",' in rendered
+    assert 'prometheus.scrape "host_metrics" {' in rendered
+    assert 'prometheus.scrape "alloy_self" {' in rendered
+    assert 'discovery.relabel "local_metrics" {' not in rendered
+    assert 'prometheus.scrape "default" {' not in rendered
+
+
+def test_the_exporter_targets_do_not_reach_the_alloy_self_component():
+    rendered = _builder().build()
+
+    alloy_self = rendered.split('discovery.relabel "alloy_self" {', 1)[1].split("\n}", 1)[0]
+
+    assert "prometheus.exporter.unix.default.targets" not in alloy_self
+
+
+def test_both_local_scrapes_keep_the_alloy_local_job_and_a_pinned_interval():
+    rendered = _builder().build()
+
+    for component in ('prometheus.scrape "host_metrics" {', 'prometheus.scrape "alloy_self" {'):
+        block = rendered.split(component, 1)[1].split("\n}", 1)[0]
+        assert '  job_name        = "alloy-local"' in block
+        assert '  scrape_interval = "15s"' in block
+
+
+def test_both_local_components_carry_the_charm_topology_labels():
+    rendered = _builder().build()
+
+    for component in ('discovery.relabel "host_metrics" {', 'discovery.relabel "alloy_self" {'):
+        block = rendered.split(component, 1)[1].split("\n}", 1)[0]
+        assert '    target_label = "juju_unit"\n    replacement  = "alloy/0"' in block

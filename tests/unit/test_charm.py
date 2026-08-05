@@ -1012,8 +1012,8 @@ def test_metrics_targets_wait_for_remote_write(monkeypatch):
     state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
 
     assert 'prometheus.remote_write "metrics" {' not in seen["config"]
-    assert 'prometheus.scrape "default" {' in seen["config"]
-    assert "forward_to = []" in seen["config"]
+    assert 'prometheus.scrape "host_metrics" {' in seen["config"]
+    assert "forward_to      = []" in seen["config"]
     assert 'prometheus.scrape "juju_model_dummychain" {' not in seen["config"]
     assert state_out.unit_status == testing.WaitingStatus(
         "Waiting for remote write before enabling manual or related metrics scraping"
