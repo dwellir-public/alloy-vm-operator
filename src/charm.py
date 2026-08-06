@@ -389,6 +389,10 @@ class AlloyCharm(ops.CharmBase):
         override = str(self.config.get("config-override", "")).strip()
         if override:
             return override
+        logger.info(
+            "Host metrics %s (enable-host-metrics)",
+            "enabled" if self._host_metrics_enabled() else "disabled",
+        )
         builder = ConfigBuilder(
             loki_endpoints=self._loki_endpoint_urls(),
             remote_write_endpoints=self._remote_write_endpoint_urls(),

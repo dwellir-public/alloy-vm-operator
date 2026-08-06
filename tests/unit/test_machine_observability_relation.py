@@ -204,6 +204,43 @@ def test_every_related_workload_gets_a_host_metrics_copy():
     assert '      juju_unit = "alloy-vm/0",' in rendered
 
 
+def test_disabled_host_metrics_with_relations_renders_no_copies():
+    seen: dict[str, str] = {}
+    with ExitStack() as stack:
+        for manager in _patch_runtime():
+            stack.enter_context(manager)
+        stack.enter_context(
+            patch(
+                "charm.PrometheusRemoteWriteConsumer.endpoints",
+                new_callable=PropertyMock,
+                return_value=[{"url": "http://mimir:9009/api/v1/push"}],
+            )
+        )
+        stack.enter_context(
+            patch(
+                "charm.alloy.write_config_text",
+                side_effect=lambda config_text, **_: seen.__setitem__("config", config_text),
+            )
+        )
+        harness = testing.Harness(AlloyCharm)
+        harness.begin()
+        harness.update_config({"systemd-units": "ssh.service"})
+
+        for application, unit in (("op-reth", "op-reth/2"), ("op-node", "op-node/0")):
+            relation_id = harness.add_relation("machine-observability", application)
+            harness.add_relation_unit(relation_id, unit)
+            harness.update_relation_data(
+                relation_id,
+                application,
+                {"payload": _v2_payload(application=application, unit=unit)},
+            )
+
+    rendered = seen["config"]
+
+    assert "prometheus.relabel" not in rendered
+    assert "prometheus.exporter.unix" not in rendered
+
+
 def test_no_related_workload_renders_no_copies():
     seen: dict[str, str] = {}
     with ExitStack() as stack:
