@@ -114,6 +114,10 @@ config:
         Default collectors emit roughly a thousand series per host, so leave this
         off where remote write volume is a concern. Alloy's own metrics are
         collected either way.
+
+        Revisions before this option collected host metrics unconditionally, so a
+        deployment refreshing onto this revision stops collecting them until this
+        is set to true.
       type: boolean
       default: false
     manual-metrics-jobs:
