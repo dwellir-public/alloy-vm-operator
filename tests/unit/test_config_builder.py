@@ -487,3 +487,48 @@ def test_copies_that_sanitize_to_the_same_name_render_once():
     ).build()
 
     assert rendered.count('prometheus.relabel "op_node" {') == 1
+
+
+def test_disabled_host_metrics_render_no_exporter_relabel_or_scrape():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_enabled=False,
+    ).build()
+
+    assert "prometheus.exporter.unix" not in rendered
+    assert 'discovery.relabel "host_metrics" {' not in rendered
+    assert 'prometheus.scrape "host_metrics" {' not in rendered
+
+
+def test_disabled_host_metrics_still_render_alloys_own_metrics():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_enabled=False,
+    ).build()
+
+    alloy_self = rendered.split('discovery.relabel "alloy_self" {', 1)[1].split("\n}", 1)[0]
+
+    assert '    job         = "alloy",' in alloy_self
+    assert 'prometheus.scrape "alloy_self" {' in rendered
+    assert "  forward_to      = [prometheus.remote_write.metrics.receiver]" in rendered
+
+
+def test_disabled_host_metrics_render_no_copies():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_NODE_COPY, OP_RETH_COPY],
+        host_metrics_enabled=False,
+    ).build()
+
+    assert "prometheus.relabel" not in rendered
+
+
+def test_enabled_host_metrics_are_the_builder_default():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_NODE_COPY],
+    ).build()
+
+    assert 'prometheus.exporter.unix "default" {' in rendered
+    assert 'prometheus.scrape "host_metrics" {' in rendered
+    assert 'prometheus.relabel "op_node_0" {' in rendered

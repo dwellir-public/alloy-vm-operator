@@ -106,6 +106,7 @@ class ConfigBuilder:
         receiver_ip: str = "",
         topology_labels: dict[str, str],
         host_metrics_copies: list[HostMetricsCopy] | None = None,
+        host_metrics_enabled: bool = True,
         log_source_groups: list[LogSourceGroup] | None = None,
     ):
         self._loki_endpoints = loki_endpoints
@@ -126,6 +127,7 @@ class ConfigBuilder:
         self._host_metrics_copies = self._deduplicate_host_metrics_copies(
             host_metrics_copies or []
         )
+        self._host_metrics_enabled = host_metrics_enabled
         self._log_source_groups = log_source_groups or []
 
     @classmethod
@@ -171,20 +173,28 @@ class ConfigBuilder:
         blocks = [
             self._render_logging(),
             "",
-            self._render_unix_exporter(),
-            "",
-            self._render_host_metrics_relabel(),
-            "",
+            *self._render_host_metrics_sources(),
             self._render_alloy_self_relabel(),
             "",
             *([self._render_remote_write(), ""] if self._remote_write_endpoints else []),
-            self._render_host_metrics_scrape(),
-            "",
+            *self._render_host_metrics_scrapes(),
             self._render_alloy_self_scrape(),
         ]
         for copy in self._active_host_metrics_copies():
             blocks.extend(["", self._render_host_metrics_copy(copy)])
         return blocks
+
+    def _render_host_metrics_sources(self) -> list[str]:
+        """Return the exporter and its relabel, or nothing when host metrics are off."""
+        if not self._host_metrics_enabled:
+            return []
+        return [self._render_unix_exporter(), "", self._render_host_metrics_relabel(), ""]
+
+    def _render_host_metrics_scrapes(self) -> list[str]:
+        """Return the host-metrics scrape, or nothing when host metrics are off."""
+        if not self._host_metrics_enabled:
+            return []
+        return [self._render_host_metrics_scrape(), ""]
 
     def _render_metrics_blocks(self) -> list[str]:
         if not (self._remote_write_endpoints and self._metrics_scrape_jobs):
@@ -294,12 +304,12 @@ class ConfigBuilder:
     def _active_host_metrics_copies(self) -> list[HostMetricsCopy]:
         """Return the copies worth rendering.
 
-        A copy needs somewhere to send its samples, which requires a remote-write
-        upstream, and something to say about them, which requires at least one
-        non-empty topology label. Otherwise it renders no component and attributes
-        nothing to anyone.
+        A copy needs a pipeline to copy from, somewhere to send its samples --
+        which requires a remote-write upstream -- and something to say about them,
+        which requires at least one non-empty topology label. Otherwise it renders
+        no component and attributes nothing to anyone.
         """
-        if not self._remote_write_endpoints:
+        if not (self._host_metrics_enabled and self._remote_write_endpoints):
             return []
         return [copy for copy in self._host_metrics_copies if any(copy.topology_labels.values())]
 
