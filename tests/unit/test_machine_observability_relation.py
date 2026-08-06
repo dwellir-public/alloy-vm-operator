@@ -179,7 +179,7 @@ def test_every_related_workload_gets_a_host_metrics_copy():
         )
         harness = testing.Harness(AlloyCharm)
         harness.begin()
-        harness.update_config({"systemd-units": "ssh.service"})
+        harness.update_config({"systemd-units": "ssh.service", "enable-host-metrics": True})
 
         for application, unit in (("op-reth", "op-reth/2"), ("op-node", "op-node/0")):
             relation_id = harness.add_relation("machine-observability", application)
@@ -217,7 +217,7 @@ def test_no_related_workload_renders_no_copies():
         )
         harness = testing.Harness(AlloyCharm)
         harness.begin()
-        harness.update_config({"systemd-units": "ssh.service"})
+        harness.update_config({"systemd-units": "ssh.service", "enable-host-metrics": True})
 
     rendered = seen["config"]
 

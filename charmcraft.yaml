@@ -99,6 +99,23 @@ config:
         Set to 0 to use the same value as `syslog-rate-limit`.
       default: 0
       type: int
+    enable-host-metrics:
+      description: |
+        Collect host-level metrics using Alloy's built-in node_exporter
+        (prometheus.exporter.unix). No process is installed on the machine and no
+        port is opened; the exporter runs inside Alloy and its metrics are
+        forwarded over remote write. This job scrapes every 15s.
+
+        Each workload related over `machine-observability` also receives its own
+        copy of these metrics under its own Juju topology, so a machine shared by
+        two workloads reports three sets: one per workload and one for the
+        alloy-vm unit.
+
+        Default collectors emit roughly a thousand series per host, so leave this
+        off where remote write volume is a concern. Alloy's own metrics are
+        collected either way.
+      type: boolean
+      default: false
     manual-metrics-jobs:
       description: |
         YAML list of manual metrics scrape jobs for non-related Prometheus targets.

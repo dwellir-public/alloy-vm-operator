@@ -408,6 +408,7 @@ class AlloyCharm(ops.CharmBase):
             receiver_ip=self._syslog_receiver_ip(),
             topology_labels=self._topology_labels(),
             host_metrics_copies=self._machine_observability_host_metrics_copies(),
+            host_metrics_enabled=self._host_metrics_enabled(),
             log_source_groups=self._machine_observability_log_source_groups(),
         )
         return f"{alloy.GENERATED_CONFIG_HEADER}{builder.build()}"
@@ -485,6 +486,10 @@ class AlloyCharm(ops.CharmBase):
     def _journal_kernel_enabled(self) -> bool:
         """Return True when host kernel journal messages should be collected."""
         return bool(self.config.get("journal-kernel", False))
+
+    def _host_metrics_enabled(self) -> bool:
+        """Return True when host-level metrics should be collected."""
+        return bool(self.config.get("enable-host-metrics", False))
 
     def _journal_match_expressions(self) -> list[str]:
         """Return raw additional journald match expressions from charm config."""

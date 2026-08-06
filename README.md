@@ -64,9 +64,19 @@ This means one `alloy-vm` unit can forward:
 
 ### Host metric attribution
 
-`alloy-vm` collects host metrics for the whole machine rather than for itself, so
-every workload related over `machine-observability` receives its own copy of them,
-labelled with that workload's Juju topology:
+Host metrics are opt-in. Set `enable-host-metrics=true` to collect them:
+
+```bash
+juju config alloy-vm enable-host-metrics=true
+```
+
+With the option off, which is the default, Alloy runs no host-metric collectors
+at all: no exporter, no host-metric scrape, and no per-workload copies. Alloy's
+own metrics from `127.0.0.1:6987` are collected either way.
+
+When enabled, `alloy-vm` collects host metrics for the whole machine rather than
+for itself, so every workload related over `machine-observability` receives its
+own copy of them, labelled with that workload's Juju topology:
 
 - one copy per related unit, carrying that unit's `juju_model`,
   `juju_model_uuid`, `juju_application`, `juju_unit` and `juju_charm`
