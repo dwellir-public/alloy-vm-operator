@@ -137,3 +137,126 @@ def test_machine_observability_v1_relation_is_blocked():
 
     assert harness.charm.unit.status.name == "blocked"
     assert "schema_version 2" in harness.charm.unit.status.message
+
+
+def _v2_payload(*, application: str, unit: str) -> str:
+    return json.dumps(
+        {
+            "schema_version": 2,
+            "charm_name": application,
+            "source_topology": {
+                "model": "base-mainnet-ovh-us-west-2",
+                "model_uuid": "00000000-0000-4000-8000-000000000042",
+                "application": application,
+                "unit": unit,
+                "charm_name": application,
+            },
+            "metrics_endpoints": [],
+            "systemd_units": [],
+            "journal_match_expressions": [],
+            "log_files": [],
+        }
+    )
+
+
+def test_every_related_workload_gets_a_host_metrics_copy():
+    seen: dict[str, str] = {}
+    with ExitStack() as stack:
+        for manager in _patch_runtime():
+            stack.enter_context(manager)
+        stack.enter_context(
+            patch(
+                "charm.PrometheusRemoteWriteConsumer.endpoints",
+                new_callable=PropertyMock,
+                return_value=[{"url": "http://mimir:9009/api/v1/push"}],
+            )
+        )
+        stack.enter_context(
+            patch(
+                "charm.alloy.write_config_text",
+                side_effect=lambda config_text, **_: seen.__setitem__("config", config_text),
+            )
+        )
+        harness = testing.Harness(AlloyCharm)
+        harness.begin()
+        harness.update_config({"systemd-units": "ssh.service", "enable-host-metrics": True})
+
+        for application, unit in (("op-reth", "op-reth/2"), ("op-node", "op-node/0")):
+            relation_id = harness.add_relation("machine-observability", application)
+            harness.add_relation_unit(relation_id, unit)
+            harness.update_relation_data(
+                relation_id,
+                application,
+                {"payload": _v2_payload(application=application, unit=unit)},
+            )
+
+    rendered = seen["config"]
+    op_node = rendered.split('prometheus.relabel "op_node_0" {', 1)[1].split("\n}", 1)[0]
+
+    assert '    target_label = "juju_unit"\n    replacement  = "op-node/0"' in op_node
+    assert '    target_label = "juju_application"\n    replacement  = "op-node"' in op_node
+    assert 'prometheus.relabel "op_reth_2" {' in rendered
+    assert (
+        "  forward_to      = [prometheus.remote_write.metrics.receiver, "
+        "prometheus.relabel.op_node_0.receiver, prometheus.relabel.op_reth_2.receiver]"
+    ) in rendered
+    assert '    target_label = "juju_unit"\n    replacement  = "alloy-vm/0"' in rendered
+    assert '      juju_unit = "alloy-vm/0",' in rendered
+
+
+def test_disabled_host_metrics_with_relations_renders_no_copies():
+    seen: dict[str, str] = {}
+    with ExitStack() as stack:
+        for manager in _patch_runtime():
+            stack.enter_context(manager)
+        stack.enter_context(
+            patch(
+                "charm.PrometheusRemoteWriteConsumer.endpoints",
+                new_callable=PropertyMock,
+                return_value=[{"url": "http://mimir:9009/api/v1/push"}],
+            )
+        )
+        stack.enter_context(
+            patch(
+                "charm.alloy.write_config_text",
+                side_effect=lambda config_text, **_: seen.__setitem__("config", config_text),
+            )
+        )
+        harness = testing.Harness(AlloyCharm)
+        harness.begin()
+        harness.update_config({"systemd-units": "ssh.service"})
+
+        for application, unit in (("op-reth", "op-reth/2"), ("op-node", "op-node/0")):
+            relation_id = harness.add_relation("machine-observability", application)
+            harness.add_relation_unit(relation_id, unit)
+            harness.update_relation_data(
+                relation_id,
+                application,
+                {"payload": _v2_payload(application=application, unit=unit)},
+            )
+
+    rendered = seen["config"]
+
+    assert "prometheus.relabel" not in rendered
+    assert "prometheus.exporter.unix" not in rendered
+
+
+def test_no_related_workload_renders_no_copies():
+    seen: dict[str, str] = {}
+    with ExitStack() as stack:
+        for manager in _patch_runtime():
+            stack.enter_context(manager)
+        stack.enter_context(
+            patch(
+                "charm.alloy.write_config_text",
+                side_effect=lambda config_text, **_: seen.__setitem__("config", config_text),
+            )
+        )
+        harness = testing.Harness(AlloyCharm)
+        harness.begin()
+        harness.update_config({"systemd-units": "ssh.service", "enable-host-metrics": True})
+
+    rendered = seen["config"]
+
+    assert "prometheus.relabel" not in rendered
+    assert '    target_label = "juju_unit"\n    replacement  = "alloy-vm/0"' in rendered

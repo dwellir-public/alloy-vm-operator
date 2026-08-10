@@ -3,7 +3,7 @@
 
 import json
 
-from config_builder import ConfigBuilder, MetricsScrapeJob, ScrapeTarget
+from config_builder import ConfigBuilder, HostMetricsCopy, MetricsScrapeJob, ScrapeTarget
 from outbound_endpoints import OutboundEndpoint
 
 TOPOLOGY = {
@@ -40,10 +40,10 @@ def _builder(**kwargs) -> ConfigBuilder:
 def test_local_metrics_drop_without_remote_write():
     rendered = _builder().build()
 
-    assert 'discovery.relabel "local_metrics" {' in rendered
-    assert 'prometheus.scrape "default" {' in rendered
-    assert 'job_name   = "alloy-local"' in rendered
-    assert "forward_to = []" in rendered
+    assert 'discovery.relabel "host_metrics" {' in rendered
+    assert 'prometheus.scrape "host_metrics" {' in rendered
+    assert 'job_name        = "alloy-local"' in rendered
+    assert "forward_to      = []" in rendered
     assert 'prometheus.remote_write "metrics" {' not in rendered
 
 
@@ -53,7 +53,7 @@ def test_local_metrics_forward_to_remote_write_when_endpoint_exists():
     assert 'prometheus.remote_write "metrics" {' in rendered
     assert 'url = "http://10.0.0.10:9009/api/v1/push"' in rendered
     assert 'max_keepalive_time = "30m"' in rendered
-    assert "forward_to = [prometheus.remote_write.metrics.receiver]" in rendered
+    assert "forward_to      = [prometheus.remote_write.metrics.receiver]" in rendered
 
 
 def test_remote_write_renders_basic_auth_and_tls_config():
@@ -309,3 +309,226 @@ def test_host_journal_source_drops_without_loki_relation():
         'loki.process "juju" {', 1
     )[0]
     assert "juju_model" not in host_section
+
+
+def test_host_metrics_and_alloy_self_render_as_separate_components():
+    rendered = _builder(remote_write_endpoints=["http://mimir:9009/api/v1/push"]).build()
+
+    assert 'discovery.relabel "host_metrics" {' in rendered
+    assert "  targets = prometheus.exporter.unix.default.targets" in rendered
+    assert 'discovery.relabel "alloy_self" {' in rendered
+    assert '    __address__ = "127.0.0.1:6987",' in rendered
+    assert 'prometheus.scrape "host_metrics" {' in rendered
+    assert 'prometheus.scrape "alloy_self" {' in rendered
+    assert 'discovery.relabel "local_metrics" {' not in rendered
+    assert 'prometheus.scrape "default" {' not in rendered
+
+    alloy_self = rendered.split('discovery.relabel "alloy_self" {', 1)[1].split("\n}", 1)[0]
+    assert '    job         = "alloy",' in alloy_self
+
+
+def test_the_exporter_targets_do_not_reach_the_alloy_self_component():
+    rendered = _builder().build()
+
+    alloy_self = rendered.split('discovery.relabel "alloy_self" {', 1)[1].split("\n}", 1)[0]
+
+    assert "prometheus.exporter.unix.default.targets" not in alloy_self
+
+
+def test_both_local_scrapes_keep_the_alloy_local_job_and_a_pinned_interval():
+    rendered = _builder().build()
+
+    for component in ('prometheus.scrape "host_metrics" {', 'prometheus.scrape "alloy_self" {'):
+        block = rendered.split(component, 1)[1].split("\n}", 1)[0]
+        assert '  job_name        = "alloy-local"' in block
+        assert '  scrape_interval = "15s"' in block
+
+
+def test_both_local_components_carry_the_charm_topology_labels():
+    rendered = _builder().build()
+
+    for component in ('discovery.relabel "host_metrics" {', 'discovery.relabel "alloy_self" {'):
+        block = rendered.split(component, 1)[1].split("\n}", 1)[0]
+        assert '    target_label = "juju_unit"\n    replacement  = "alloy/0"' in block
+
+
+OP_NODE_COPY = HostMetricsCopy(
+    component_name="op-node_0",
+    topology_labels={
+        "juju_model": "base-mainnet",
+        "juju_model_uuid": "00000000-0000-4000-8000-000000000002",
+        "juju_application": "op-node",
+        "juju_unit": "op-node/0",
+        "juju_charm": "op-node",
+    },
+)
+OP_RETH_COPY = HostMetricsCopy(
+    component_name="op-reth_2",
+    topology_labels={
+        "juju_model": "base-mainnet",
+        "juju_model_uuid": "00000000-0000-4000-8000-000000000002",
+        "juju_application": "op-reth",
+        "juju_unit": "op-reth/2",
+        "juju_charm": "op-reth",
+    },
+)
+
+
+def test_each_copy_renders_a_relabel_component_with_its_own_topology():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_RETH_COPY, OP_NODE_COPY],
+    ).build()
+
+    op_node = rendered.split('prometheus.relabel "op_node_0" {', 1)[1].split("\n}", 1)[0]
+
+    assert "  forward_to = [prometheus.remote_write.metrics.receiver]" in op_node
+    assert '    target_label = "juju_unit"\n    replacement  = "op-node/0"' in op_node
+    assert '    target_label = "juju_application"\n    replacement  = "op-node"' in op_node
+    assert '    target_label = "juju_charm"\n    replacement  = "op-node"' in op_node
+    assert 'prometheus.relabel "op_reth_2" {' in rendered
+
+
+def test_the_host_scrape_forwards_to_remote_write_and_every_copy():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_RETH_COPY, OP_NODE_COPY],
+    ).build()
+
+    assert (
+        "  forward_to      = [prometheus.remote_write.metrics.receiver, "
+        "prometheus.relabel.op_node_0.receiver, prometheus.relabel.op_reth_2.receiver]"
+    ) in rendered
+
+
+def test_the_alloy_self_scrape_never_forwards_to_a_copy():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_NODE_COPY],
+    ).build()
+
+    alloy_self = rendered.split('prometheus.scrape "alloy_self" {', 1)[1].split("\n}", 1)[0]
+
+    assert "  forward_to      = [prometheus.remote_write.metrics.receiver]" in alloy_self
+
+
+def test_copies_are_dropped_without_a_remote_write_upstream():
+    rendered = _builder(host_metrics_copies=[OP_NODE_COPY]).build()
+
+    assert "prometheus.relabel" not in rendered
+    assert "  forward_to      = []" in rendered
+
+
+def test_no_copies_renders_only_the_collectors_own_pipeline():
+    rendered = _builder(remote_write_endpoints=["http://mimir:9009/api/v1/push"]).build()
+
+    assert "prometheus.relabel" not in rendered
+    assert "  forward_to      = [prometheus.remote_write.metrics.receiver]" in rendered
+
+
+def test_partial_copy_clears_the_labels_it_does_not_set():
+    partial_copy = HostMetricsCopy(
+        component_name="partial",
+        topology_labels={
+            "juju_application": "op-node",
+            "juju_unit": "op-node/0",
+        },
+    )
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[partial_copy],
+    ).build()
+
+    block = rendered.split('prometheus.relabel "partial" {', 1)[1].split("\n}", 1)[0]
+
+    assert '    target_label = "juju_application"\n    replacement  = "op-node"' in block
+    assert '    target_label = "juju_unit"\n    replacement  = "op-node/0"' in block
+    assert '    action = "labeldrop"\n    regex  = "juju_model"' in block
+    assert '    action = "labeldrop"\n    regex  = "juju_model_uuid"' in block
+    assert '    action = "labeldrop"\n    regex  = "juju_charm"' in block
+
+
+def test_empty_copy_renders_no_component_and_no_forward_to_entry():
+    empty_copy = HostMetricsCopy(component_name="empty", topology_labels={})
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[empty_copy],
+    ).build()
+
+    assert 'prometheus.relabel "empty" {' not in rendered
+    assert "prometheus.relabel.empty.receiver" not in rendered
+
+
+def test_fully_populated_copy_still_renders_only_replace_rules():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_NODE_COPY],
+    ).build()
+
+    block = rendered.split('prometheus.relabel "op_node_0" {', 1)[1].split("\n}", 1)[0]
+
+    assert block.count("  rule {") == 5
+    assert block.count("replacement  =") == 5
+    assert "labeldrop" not in block
+
+
+def test_copies_that_sanitize_to_the_same_name_render_once():
+    duplicate_a = HostMetricsCopy(
+        component_name="op node",
+        topology_labels={"juju_application": "op-node", "juju_unit": "op-node/0"},
+    )
+    duplicate_b = HostMetricsCopy(
+        component_name="op_node",
+        topology_labels={"juju_application": "op-node-dup", "juju_unit": "op-node-dup/0"},
+    )
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[duplicate_a, duplicate_b],
+    ).build()
+
+    assert rendered.count('prometheus.relabel "op_node" {') == 1
+
+
+def test_disabled_host_metrics_render_no_exporter_relabel_or_scrape():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_enabled=False,
+    ).build()
+
+    assert "prometheus.exporter.unix" not in rendered
+    assert 'discovery.relabel "host_metrics" {' not in rendered
+    assert 'prometheus.scrape "host_metrics" {' not in rendered
+
+
+def test_disabled_host_metrics_still_render_alloys_own_metrics():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_enabled=False,
+    ).build()
+
+    alloy_self = rendered.split('discovery.relabel "alloy_self" {', 1)[1].split("\n}", 1)[0]
+
+    assert '    job         = "alloy",' in alloy_self
+    assert 'prometheus.scrape "alloy_self" {' in rendered
+    assert "  forward_to      = [prometheus.remote_write.metrics.receiver]" in rendered
+
+
+def test_disabled_host_metrics_render_no_copies():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_NODE_COPY, OP_RETH_COPY],
+        host_metrics_enabled=False,
+    ).build()
+
+    assert "prometheus.relabel" not in rendered
+
+
+def test_enabled_host_metrics_are_the_builder_default():
+    rendered = _builder(
+        remote_write_endpoints=["http://mimir:9009/api/v1/push"],
+        host_metrics_copies=[OP_NODE_COPY],
+    ).build()
+
+    assert 'prometheus.exporter.unix "default" {' in rendered
+    assert 'prometheus.scrape "host_metrics" {' in rendered
+    assert 'prometheus.relabel "op_node_0" {' in rendered

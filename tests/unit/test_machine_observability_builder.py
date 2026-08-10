@@ -3,7 +3,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from charms.dwellir_observability.v0.machine_observability import (
+    MachineObservabilityPayload,
+    SourceTopology,
+)
+
 from config_builder import ConfigBuilder, FileLogSource, LogSourceGroup
+from machine_observability_sources import translate_machine_observability_payload
 
 TOPOLOGY = {
     "juju_model": "alloy-model",
@@ -72,3 +78,29 @@ def test_machine_log_source_groups_render_independent_processors():
     assert 'matches = "_SYSTEMD_UNIT=op-reth.service"' in rendered
     assert "/var/log/op-node/*.log" in rendered
     assert "/var/log/op-node/debug.log" in rendered
+
+
+def test_translated_source_carries_a_host_metrics_copy():
+    payload = MachineObservabilityPayload(
+        schema_version=2,
+        charm_name="op-node",
+        source_topology=SourceTopology(
+            model="base-mainnet",
+            model_uuid="00000000-0000-4000-8000-000000000002",
+            application="op-node",
+            unit="op-node/0",
+            charm_name="op-node",
+        ),
+    )
+
+    source = translate_machine_observability_payload(payload)
+
+    assert source.host_metrics_copy is not None
+    assert source.host_metrics_copy.component_name == "op-node_0"
+    assert source.host_metrics_copy.topology_labels == {
+        "juju_model": "base-mainnet",
+        "juju_model_uuid": "00000000-0000-4000-8000-000000000002",
+        "juju_application": "op-node",
+        "juju_unit": "op-node/0",
+        "juju_charm": "op-node",
+    }

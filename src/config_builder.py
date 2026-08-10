@@ -21,6 +21,10 @@ DEFAULT_PACKAGE_CONFIG_BACKUP_PATH = os.path.join(
 DEFAULT_CONFIG_BACKUP_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.alloy.bak")
 REMOTE_WRITE_COMPONENT_NAME = "metrics"
 REMOTE_WRITE_MAX_KEEPALIVE = "30m"
+
+# Host metrics are cheap and their value is in the resolution, so the local
+# scrape is pinned here rather than inheriting Alloy's one-minute default.
+LOCAL_METRICS_SCRAPE_INTERVAL = "15s"
 DEFAULT_SYSLOG_ACCESS_DROP_EXPRESSIONS = [
     '.*"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE) .* HTTP/.*"',
 ]
@@ -45,6 +49,19 @@ class MetricsScrapeJob:
     scrape_interval: str = ""
     scrape_timeout: str = ""
     tls_config: dict[str, str | bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class HostMetricsCopy:
+    """One extra copy of the host metrics, labelled for a workload on this machine.
+
+    Host metrics describe the machine, and several Juju workloads can share one.
+    Each copy re-stamps the single scrape's samples with one workload's own
+    topology, so its metrics and the machine's arrive under the same labels.
+    """
+
+    component_name: str
+    topology_labels: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -88,6 +105,8 @@ class ConfigBuilder:
         receiver_hostname: str = "",
         receiver_ip: str = "",
         topology_labels: dict[str, str],
+        host_metrics_copies: list[HostMetricsCopy] | None = None,
+        host_metrics_enabled: bool = True,
         log_source_groups: list[LogSourceGroup] | None = None,
     ):
         self._loki_endpoints = loki_endpoints
@@ -105,7 +124,33 @@ class ConfigBuilder:
         self._receiver_hostname = receiver_hostname
         self._receiver_ip = receiver_ip
         self._topology_labels = topology_labels
+        self._host_metrics_copies = self._deduplicate_host_metrics_copies(
+            host_metrics_copies or []
+        )
+        self._host_metrics_enabled = host_metrics_enabled
         self._log_source_groups = log_source_groups or []
+
+    @classmethod
+    def _deduplicate_host_metrics_copies(
+        cls, copies: list[HostMetricsCopy]
+    ) -> list[HostMetricsCopy]:
+        """Sort copies by their sanitized component name, dropping later duplicates.
+
+        Two copies whose names sanitize to the same string would otherwise render
+        two components with identical names, which Alloy rejects at load time.
+        """
+
+        def sanitized_name(copy: HostMetricsCopy) -> str:
+            return cls._sanitize_component_name(copy.component_name)
+
+        deduplicated: list[HostMetricsCopy] = []
+        seen_names: set[str] = set()
+        for copy in sorted(copies, key=sanitized_name):
+            name = sanitized_name(copy)
+            if name not in seen_names:
+                seen_names.add(name)
+                deduplicated.append(copy)
+        return deduplicated
 
     @staticmethod
     def _normalize_endpoints(
@@ -125,16 +170,31 @@ class ConfigBuilder:
         return "\n".join(blocks).rstrip() + "\n"
 
     def _render_base_blocks(self) -> list[str]:
-        return [
+        blocks = [
             self._render_logging(),
             "",
-            self._render_unix_exporter(),
-            "",
-            self._render_local_metrics_relabel(),
+            *self._render_host_metrics_sources(),
+            self._render_alloy_self_relabel(),
             "",
             *([self._render_remote_write(), ""] if self._remote_write_endpoints else []),
-            self._render_local_metrics_scrape(),
+            *self._render_host_metrics_scrapes(),
+            self._render_alloy_self_scrape(),
         ]
+        for copy in self._active_host_metrics_copies():
+            blocks.extend(["", self._render_host_metrics_copy(copy)])
+        return blocks
+
+    def _render_host_metrics_sources(self) -> list[str]:
+        """Return the exporter and its relabel, or nothing when host metrics are off."""
+        if not self._host_metrics_enabled:
+            return []
+        return [self._render_unix_exporter(), "", self._render_host_metrics_relabel(), ""]
+
+    def _render_host_metrics_scrapes(self) -> list[str]:
+        """Return the host-metrics scrape, or nothing when host metrics are off."""
+        if not self._host_metrics_enabled:
+            return []
+        return [self._render_host_metrics_scrape(), ""]
 
     def _render_metrics_blocks(self) -> list[str]:
         if not (self._remote_write_endpoints and self._metrics_scrape_jobs):
@@ -193,10 +253,11 @@ class ConfigBuilder:
             ]
         )
 
-    def _render_local_metrics_relabel(self) -> str:
-        rules = []
+    def _render_topology_rules(self, labels: dict[str, str]) -> list[str]:
+        """Render blank-line separated relabel rules that stamp topology labels."""
+        rules: list[str] = []
         for key in self._topology_label_order():
-            value = self._topology_labels.get(key)
+            value = labels.get(key)
             if value:
                 rules.extend(
                     [
@@ -209,28 +270,132 @@ class ConfigBuilder:
                 )
         if rules:
             rules.pop()
+        return rules
+
+    def _render_host_metrics_relabel(self) -> str:
         return "\n".join(
             [
-                'discovery.relabel "local_metrics" {',
-                "  targets = array.concat(",
-                "    prometheus.exporter.unix.default.targets,",
-                "    [{",
-                '      job         = "alloy",',
-                '      __address__ = "127.0.0.1:6987",',
-                "    }],",
-                "  )",
-                *(rules or [""]),
+                'discovery.relabel "host_metrics" {',
+                "  targets = prometheus.exporter.unix.default.targets",
+                *(self._render_topology_rules(self._topology_labels) or [""]),
                 "}",
             ]
         )
 
-    def _render_local_metrics_scrape(self) -> str:
+    def _render_alloy_self_relabel(self) -> str:
+        """Render the relabel for Alloy's own metrics.
+
+        The target map keeps its explicit ``job`` key, so Alloy's self-metrics
+        carry the same job label they did when this target shared a component
+        with the exporter's.
+        """
         return "\n".join(
             [
-                'prometheus.scrape "default" {',
-                "  targets    = discovery.relabel.local_metrics.output",
-                '  job_name   = "alloy-local"',
-                f"  forward_to = {self._metrics_forward_to()}",
+                'discovery.relabel "alloy_self" {',
+                "  targets = [{",
+                '    job         = "alloy",',
+                '    __address__ = "127.0.0.1:6987",',
+                "  }]",
+                *(self._render_topology_rules(self._topology_labels) or [""]),
+                "}",
+            ]
+        )
+
+    def _active_host_metrics_copies(self) -> list[HostMetricsCopy]:
+        """Return the copies worth rendering.
+
+        A copy needs a pipeline to copy from, somewhere to send its samples --
+        which requires a remote-write upstream -- and something to say about them,
+        which requires at least one non-empty topology label. Otherwise it renders
+        no component and attributes nothing to anyone.
+        """
+        if not (self._host_metrics_enabled and self._remote_write_endpoints):
+            return []
+        return [copy for copy in self._host_metrics_copies if any(copy.topology_labels.values())]
+
+    def _host_metrics_forward_to(self) -> str:
+        """Return the receivers for the one scrape of the exporter.
+
+        Remote write takes the samples labelled for this unit; each copy's
+        relabel component takes the same samples and re-stamps them.
+        """
+        receivers: list[str] = []
+        if self._remote_write_endpoints:
+            receivers.append(f"prometheus.remote_write.{REMOTE_WRITE_COMPONENT_NAME}.receiver")
+        receivers.extend(
+            f"prometheus.relabel.{self._sanitize_component_name(copy.component_name)}.receiver"
+            for copy in self._active_host_metrics_copies()
+        )
+        return f"[{', '.join(receivers)}]"
+
+    def _render_host_metrics_copy(self, copy: HostMetricsCopy) -> str:
+        """Render one relabel component that re-stamps the exporter's samples."""
+        lines = [
+            f'prometheus.relabel "{self._sanitize_component_name(copy.component_name)}" {{',
+            f"  forward_to = {self._metrics_forward_to()}",
+        ]
+        rules = self._render_copy_topology_rules(copy.topology_labels)
+        if rules:
+            lines.extend(["", *rules])
+        lines.append("}")
+        return "\n".join(lines)
+
+    def _render_copy_topology_rules(self, labels: dict[str, str]) -> list[str]:
+        """Render blank-line separated relabel rules for a host metrics copy.
+
+        Samples reaching a copy have already been stamped with the collector's
+        topology by ``discovery.relabel "host_metrics"``. Skipping a key the copy
+        does not set would silently keep the collector's value, so every key gets
+        a rule: a ``replace`` where the copy has a value, and a ``labeldrop`` that
+        removes the label where it does not.
+        """
+        rules: list[str] = []
+        for key in self._topology_label_order():
+            value = labels.get(key)
+            if value:
+                rules.extend(
+                    [
+                        "  rule {",
+                        f'    target_label = "{key}"',
+                        f"    replacement  = {json.dumps(value)}",
+                        "  }",
+                        "",
+                    ]
+                )
+            else:
+                rules.extend(
+                    [
+                        "  rule {",
+                        '    action = "labeldrop"',
+                        f'    regex  = "{key}"',
+                        "  }",
+                        "",
+                    ]
+                )
+        if rules:
+            rules.pop()
+        return rules
+
+    def _render_host_metrics_scrape(self) -> str:
+        return "\n".join(
+            [
+                'prometheus.scrape "host_metrics" {',
+                "  targets         = discovery.relabel.host_metrics.output",
+                '  job_name        = "alloy-local"',
+                f'  scrape_interval = "{LOCAL_METRICS_SCRAPE_INTERVAL}"',
+                f"  forward_to      = {self._host_metrics_forward_to()}",
+                "}",
+            ]
+        )
+
+    def _render_alloy_self_scrape(self) -> str:
+        return "\n".join(
+            [
+                'prometheus.scrape "alloy_self" {',
+                "  targets         = discovery.relabel.alloy_self.output",
+                '  job_name        = "alloy-local"',
+                f'  scrape_interval = "{LOCAL_METRICS_SCRAPE_INTERVAL}"',
+                f"  forward_to      = {self._metrics_forward_to()}",
                 "}",
             ]
         )

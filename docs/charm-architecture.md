@@ -53,6 +53,12 @@ This override is intentionally opt-in:
 - Juju topology labels remain unchanged
 - future scrape providers are unaffected unless they explicitly adopt the override field
 
+Host metrics are opt-in through the `enable-host-metrics` config option, off by default. When
+enabled, Alloy's built-in `prometheus.exporter.unix` is scraped once for the whole machine, and
+that single collection is copied per related `machine-observability` workload plus once for the
+`alloy-vm` unit itself, each copy carrying the corresponding topology labels. With the option off,
+no exporter, host-metric scrape, or copies are rendered at all.
+
 ## Logging Flow
 
 For logs, Alloy can:
@@ -71,6 +77,12 @@ The important topology distinction is:
 - host-configured journal capture keeps `alloy-vm` topology
 - `machine-observability` log inputs render one `loki.process` per related
   principal and apply that provider's `source_topology`
+- host metrics are opt-in through `enable-host-metrics` and, when enabled, are
+  collected once and copied per related workload: each copy carries that
+  provider's `source_topology`, and the `alloy-vm` unit keeps a copy under its
+  own topology; Alloy's own metrics scrape always runs at a pinned 15s
+  interval, and the host-metrics scrape, when enabled, runs at that same
+  interval as the copies
 
 This is what allows one `alloy-vm` unit to aggregate `op-node` and `op-reth`
 on the same machine without collapsing both streams into `alloy-vm` labels.

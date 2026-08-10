@@ -9,7 +9,8 @@ Supported bases:
 
 Alloy now supports:
 
-- local self metrics and `prometheus.exporter.unix` host metrics
+- local self metrics, plus opt-in `prometheus.exporter.unix` host metrics (see
+  [Host metric attribution](#host-metric-attribution))
 - relation-driven machine-local workload telemetry over `machine-observability`
 - relation-driven scrape targets over `metrics-endpoint` (`prometheus_scrape`)
 - manual scrape targets over `manual-metrics-jobs`
@@ -59,7 +60,66 @@ This means one `alloy-vm` unit can forward:
 
 - `op-node` metrics and logs labeled as `op-node`
 - `op-reth` metrics and logs labeled as `op-reth`
-- its own local Alloy and host metrics labeled as `alloy-vm`
+- its own local Alloy metrics labeled as `alloy-vm`, plus, when `enable-host-metrics`
+  is set, host metrics labeled as `alloy-vm` and one copy of the host metrics per
+  related workload under that workload's labels (see below)
+
+### Host metric attribution
+
+Host metrics are opt-in. Set `enable-host-metrics=true` to collect them:
+
+```bash
+juju config alloy-vm enable-host-metrics=true
+```
+
+With the option off, which is the default, Alloy runs no host-metric collectors
+at all: no exporter, no host-metric scrape, and no per-workload copies. Alloy's
+own metrics from `127.0.0.1:6987` are collected either way. With the option off,
+`job="alloy-local"` matches nothing; Alloy's own metrics remain under
+`job="alloy"`, which comes from their target map rather than the scrape's
+`job_name`.
+
+Upgrading from an earlier revision: revisions before this option existed collected
+host metrics unconditionally. A deployment refreshing onto this revision stops
+collecting them, silently, until an operator sets `enable-host-metrics=true`.
+There is a gap between the refresh and that config change during which no host
+metrics are collected, so set the option right after refreshing if you want to
+keep them.
+
+When enabled, `alloy-vm` collects host metrics for the whole machine rather than
+for itself, so every workload related over `machine-observability` receives its
+own copy of them, labelled with that workload's Juju topology:
+
+- one copy per related unit, carrying that unit's `juju_model`,
+  `juju_model_uuid`, `juju_application`, `juju_unit` and `juju_charm`
+- one copy for the `alloy-vm` unit itself, carrying its own topology, exactly as
+  before
+- every copy keeps `job = "alloy-local"`, so existing queries still select host
+  metrics; the copies differ only in their `juju_*` labels
+
+A machine running `op-node/0` and `op-reth/2` therefore reports three sets of host
+metrics: one per workload and one for the collector. That multiplies host-metric
+series and remote-write volume by the number of related units plus one.
+
+The exporter is scraped once regardless of how many units share the machine —
+the samples are duplicated in Alloy's pipeline, not collected repeatedly. Copies
+are rendered only when a remote-write upstream is related; without one there is
+nowhere to send them.
+
+Attribution is accurate when each related application has one unit per machine.
+The payload is application-scoped, so a provider with units spread across machines
+publishes a single unit name to all of them.
+
+Alloy's own metrics scrape from `127.0.0.1:6987` always runs at a pinned 15s
+interval, regardless of this option. When `enable-host-metrics` is set, the
+host-metrics scrape runs at that same 15s interval too, rather than Alloy's
+one-minute default: host metrics are cheap and their value is in the
+resolution, so the interval is fixed.
+
+Only host metrics are copied this way. Per-source metrics jobs and every log
+stream, including host journal logs, keep the labels of the workload that declared
+them, and Alloy's own metrics from `127.0.0.1:6987` stay on the `alloy-vm` unit's
+topology alone.
 
 ### Example relations
 

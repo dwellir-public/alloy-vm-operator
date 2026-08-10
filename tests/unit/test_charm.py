@@ -1006,14 +1006,15 @@ def test_metrics_targets_wait_for_remote_write(monkeypatch):
         "alloy-livedebugging": False,
         "enable-syslogreceivers": False,
         "systemd-units": "",
+        "enable-host-metrics": True,
         "log-level": "info",
     }
 
     state_out = ctx.run(ctx.on.config_changed(), testing.State(config=config))
 
     assert 'prometheus.remote_write "metrics" {' not in seen["config"]
-    assert 'prometheus.scrape "default" {' in seen["config"]
-    assert "forward_to = []" in seen["config"]
+    assert 'prometheus.scrape "host_metrics" {' in seen["config"]
+    assert "forward_to      = []" in seen["config"]
     assert 'prometheus.scrape "juju_model_dummychain" {' not in seen["config"]
     assert state_out.unit_status == testing.WaitingStatus(
         "Waiting for remote write before enabling manual or related metrics scraping"
@@ -1161,3 +1162,45 @@ def test_manual_metrics_jobs_invalid_config_blocks(monkeypatch):
     assert state_out.unit_status == testing.BlockedStatus(
         "manual metrics job 'external-node-exporter' labels must not override reserved juju labels"
     )
+
+
+def test_host_metrics_are_off_by_default(monkeypatch):
+    seen: dict[str, str] = {}
+    ctx = testing.Context(AlloyCharm)
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.alloy.write_config_text",
+        lambda config_text, **_: seen.__setitem__("config", config_text),
+    )
+
+    ctx.run(ctx.on.config_changed(), testing.State())
+
+    assert "prometheus.exporter.unix" not in seen["config"]
+    assert 'prometheus.scrape "host_metrics" {' not in seen["config"]
+    assert 'prometheus.scrape "alloy_self" {' in seen["config"]
+
+
+def test_enabling_host_metrics_renders_the_pipeline(monkeypatch):
+    seen: dict[str, str] = {}
+    ctx = testing.Context(AlloyCharm)
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr(
+        "charm.alloy.write_config_text",
+        lambda config_text, **_: seen.__setitem__("config", config_text),
+    )
+
+    ctx.run(
+        ctx.on.config_changed(),
+        testing.State(config={"enable-host-metrics": True}),
+    )
+
+    assert 'prometheus.exporter.unix "default" {' in seen["config"]
+    assert 'prometheus.scrape "host_metrics" {' in seen["config"]

@@ -28,6 +28,7 @@ from config_builder import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_PACKAGE_CONFIG_BACKUP_PATH,
     ConfigBuilder,
+    HostMetricsCopy,
     LogSourceGroup,
     MetricsScrapeJob,
     ScrapeTarget,
@@ -388,6 +389,10 @@ class AlloyCharm(ops.CharmBase):
         override = str(self.config.get("config-override", "")).strip()
         if override:
             return override
+        logger.info(
+            "Host metrics %s (enable-host-metrics)",
+            "enabled" if self._host_metrics_enabled() else "disabled",
+        )
         builder = ConfigBuilder(
             loki_endpoints=self._loki_endpoint_urls(),
             remote_write_endpoints=self._remote_write_endpoint_urls(),
@@ -405,15 +410,9 @@ class AlloyCharm(ops.CharmBase):
             syslog_rate_burst=self._syslog_rate_burst(),
             receiver_hostname=self._syslog_receiver_hostname(),
             receiver_ip=self._syslog_receiver_ip(),
-            topology_labels=self._topology.as_dict(
-                remapped_keys={
-                    "model": "juju_model",
-                    "model_uuid": "juju_model_uuid",
-                    "application": "juju_application",
-                    "unit": "juju_unit",
-                    "charm_name": "juju_charm",
-                }
-            ),
+            topology_labels=self._topology_labels(),
+            host_metrics_copies=self._machine_observability_host_metrics_copies(),
+            host_metrics_enabled=self._host_metrics_enabled(),
             log_source_groups=self._machine_observability_log_source_groups(),
         )
         return f"{alloy.GENERATED_CONFIG_HEADER}{builder.build()}"
@@ -491,6 +490,10 @@ class AlloyCharm(ops.CharmBase):
     def _journal_kernel_enabled(self) -> bool:
         """Return True when host kernel journal messages should be collected."""
         return bool(self.config.get("journal-kernel", False))
+
+    def _host_metrics_enabled(self) -> bool:
+        """Return True when host-level metrics should be collected."""
+        return bool(self.config.get("enable-host-metrics", False))
 
     def _journal_match_expressions(self) -> list[str]:
         """Return raw additional journald match expressions from charm config."""
@@ -655,15 +658,7 @@ class AlloyCharm(ops.CharmBase):
             return []
         return parse_manual_metrics_jobs(
             str(self.config.get("manual-metrics-jobs", "")),
-            topology_labels=self._topology.as_dict(
-                remapped_keys={
-                    "model": "juju_model",
-                    "model_uuid": "juju_model_uuid",
-                    "application": "juju_application",
-                    "unit": "juju_unit",
-                    "charm_name": "juju_charm",
-                }
-            ),
+            topology_labels=self._topology_labels(),
         )
 
     def _translated_metrics_scrape_jobs(self) -> list[MetricsScrapeJob]:
@@ -918,6 +913,18 @@ class AlloyCharm(ops.CharmBase):
         tokens = raw.replace("\n", ",").split(",")
         return [token.strip() for token in tokens if token.strip()]
 
+    def _topology_labels(self) -> dict[str, str]:
+        """Return this unit's own Juju topology as Prometheus-style labels."""
+        return self._topology.as_dict(
+            remapped_keys={
+                "model": "juju_model",
+                "model_uuid": "juju_model_uuid",
+                "application": "juju_application",
+                "unit": "juju_unit",
+                "charm_name": "juju_charm",
+            }
+        )
+
     def _machine_observability_contract_error(self) -> str | None:
         """Return the first invalid machine-observability contract error."""
         for relation in self.model.relations.get("machine-observability", []):
@@ -968,6 +975,14 @@ class AlloyCharm(ops.CharmBase):
             if source.log_source_group is not None:
                 groups.append(source.log_source_group)
         return groups
+
+    def _machine_observability_host_metrics_copies(self) -> list[HostMetricsCopy]:
+        """Return one host-metrics copy per workload sharing this machine."""
+        return [
+            source.host_metrics_copy
+            for source in self._machine_observability_sources()
+            if source.host_metrics_copy is not None
+        ]
 
 
 if __name__ == "__main__":
