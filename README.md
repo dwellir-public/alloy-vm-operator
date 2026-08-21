@@ -31,19 +31,36 @@ collects telemetry from multiple colocated principals such as `op-node` and
 
 ### Contract requirements
 
-`alloy-vm` requires the v2 `machine_observability` payload shape from related
+`alloy-vm` accepts v2 and v3 `machine_observability` payloads from related
 providers:
 
-- `schema_version: 2`
+- `schema_version: 2` or `schema_version: 3`
 - `source_topology`
 
-`source_topology` is required because `alloy-vm` must preserve the provider's
-own Juju identity when several principals share one machine.
+`source_topology` is required for telemetry because `alloy-vm` has no
+subordinate attachment from which to derive a fallback. In addition, non-empty
+v3 rule sets require valid `source_topology.model_uuid` and
+`source_topology.application` for stable ownership.
 
 If a related provider still publishes v1 payloads without `source_topology`,
 `alloy-vm` blocks with a message like:
 
-- `machine-observability from <app> requires schema_version 2 with source_topology`
+- `machine-observability from <app> requires schema_version 2 or 3 with source_topology`
+
+V3 retains the v2 telemetry shape and adds `prometheus_alert_rules` and
+`loki_alert_rules`. Artifacts use `gzip+base64`, include a decoded-byte SHA-256,
+and form complete desired state. The full payload may be exactly `60 * 1024`
+bytes but no larger, and is not chunked; at most 32 artifacts are admitted per
+relation.
+
+Alloy validates bounded rule documents and their PromQL/LogQL with packaged
+`cos-tool`, an internal hook-time CLI rather than a service or plugin. It
+injects labels from the original payload's source topology exactly once
+without rewriting expressions, names, or non-topology labels. A malformed,
+future-version, or structurally invalid outer payload retains the whole
+relation's leader-shared LKG. Within a valid v3 payload, a malformed artifact
+retains only its own LKG. Valid omission and relation removal withdraw owned
+rules while unrelated telemetry continues.
 
 ### What gets rendered
 
@@ -67,8 +84,23 @@ This means one `alloy-vm` unit can forward:
 juju relate alloy-vm:machine-observability op-node:machine-observability
 juju relate alloy-vm:machine-observability op-reth:machine-observability
 juju relate alloy-vm:send-remote-write mimir-vm:receive-remote-write
-juju relate alloy-vm:send-loki-logs loki-loadbalancer-vm:loki_push_api
+juju relate alloy-vm:send-loki-logs loki-vm:loki_push_api
 ```
+
+With gateways, add their separate rule-forwarding relations:
+
+```bash
+juju relate alloy-vm:send-loki-logs loki-loadbalancer-vm:loki_push_api
+juju relate loki-loadbalancer-vm:loki-alert-rules loki-vm:loki_push_api
+juju relate loki-loadbalancer-vm:ingress loki-vm:ingress
+juju relate alloy-vm:send-remote-write mimir-gateway-vm:receive-remote-write
+juju relate mimir-gateway-vm:mimir-alert-rules mimir-vm:receive-remote-write
+juju relate mimir-gateway-vm:backend mimir-vm:backend
+```
+
+Dashboards do not pass through Alloy; each principal relates its standard
+`grafana_dashboard` endpoint directly to Grafana VM or Grafana K8s, including
+over CMR.
 
 Verify the related payloads on the Alloy unit:
 
@@ -173,7 +205,7 @@ metrics store. Tenant-aware relation metadata is not required or published by
 `alloy-vm`; separation is done through metric labels such as Juju topology.
 
 For a validated local build and unit-test workflow for the
-`machine-observability` v2 consumer path, see
+`machine-observability` v2/v3 consumer path, see
 [docs/build-test-deploy.md](docs/build-test-deploy.md).
 
 ### No-upstream behavior
