@@ -6,6 +6,7 @@ import base64
 import binascii
 import copy
 import hashlib
+import heapq
 import hmac
 import json
 import re
@@ -13,6 +14,7 @@ import subprocess
 import tempfile
 import time
 import zlib
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,7 @@ from typing import Any
 import yaml
 from charms.dwellir_observability.v0.machine_observability import (
     MAX_DECODED_ARTIFACT_BYTES,
+    MAX_SERIALIZED_PAYLOAD_BYTES,
     MAX_TOTAL_DECODED_ARTIFACT_BYTES,
     ObservabilityArtifact,
 )
@@ -56,6 +59,15 @@ _LABEL_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z_:][A-Za-z0-9_:]*$")
 RuleValidator = Callable[[str, list[dict[str, object]]], bool]
 MAX_RULE_ARTIFACTS = 32
+# Bound per-reconcile detail/log fan-out; one aggregate truncation summary may follow.
+MAX_RULE_ERROR_DETAILS = 16
+# Bound schema validation and transformation work within each decoded artifact.
+MAX_RULE_GROUPS_PER_ARTIFACT = 128
+MAX_RULES_PER_GROUP = 128
+MAX_RULES_PER_ARTIFACT = 1024
+# Keep transformed rule state within the relation library's publish ceiling.
+MAX_TRANSFORMED_ARTIFACT_BYTES = MAX_SERIALIZED_PAYLOAD_BYTES
+MAX_TOPOLOGY_COMPONENT_BYTES = 256
 _MAX_VALIDATION_CALLS = 32
 _VALIDATION_BUDGET_SECONDS = 15.0
 _VALIDATION_PROCESS_TIMEOUT_SECONDS = 3.0
@@ -166,18 +178,30 @@ def _topology_labels(payload: Any) -> dict[str, str]:
     topology = _value(payload, "source_topology", None)
     if topology is None:
         return {}
-    return {label: str(value) for label, field in _TOPOLOGY_FIELDS if (value := _value(topology, field, ""))}
+    labels: dict[str, str] = {}
+    for label, field in _TOPOLOGY_FIELDS:
+        value = _value(topology, field, "")
+        if not value:
+            continue
+        if not _valid_topology_component(value):
+            raise ValueError("topology")
+        labels[label] = value
+    return labels
+
+
+def _valid_topology_component(value: object) -> bool:
+    """Accept bounded printable topology strings before transformation."""
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and 0 < len(value.encode("utf-8")) <= MAX_TOPOLOGY_COMPONENT_BYTES
+        and value.isprintable()
+    )
 
 
 def _valid_ownership_component(value: object) -> bool:
     """Accept bounded printable identity components that cannot confuse ownership paths."""
-    return (
-        isinstance(value, str)
-        and value == value.strip()
-        and 0 < len(value.encode("utf-8")) <= 256
-        and "/" not in value
-        and value.isprintable()
-    )
+    return _valid_topology_component(value) and isinstance(value, str) and "/" not in value and value.isprintable()
 
 
 def _matcher_value(value: str) -> str:
@@ -197,7 +221,17 @@ def _validate_rule_document(document: Any) -> list[dict[str, object]]:
     groups = document["groups"]
     if not isinstance(groups, list):
         raise ValueError("schema")
+    if len(groups) > MAX_RULE_GROUPS_PER_ARTIFACT:
+        raise ValueError("limit")
+    total_rules = 0
     for group in groups:
+        if isinstance(group, dict) and isinstance(group.get("rules"), list):
+            rule_count = len(group["rules"])
+            if rule_count > MAX_RULES_PER_GROUP:
+                raise ValueError("limit")
+            total_rules += rule_count
+            if total_rules > MAX_RULES_PER_ARTIFACT:
+                raise ValueError("limit")
         _validate_group(group)
     return groups
 
@@ -313,6 +347,7 @@ def _transform_groups(
             if key in {"juju_model_uuid", "juju_application", "juju_unit"}
         )
     )
+    _enforce_transform_budget(groups, artifact_id, identifier, matcher, topology_labels)
     transformed: list[tuple[str, str, dict[str, object]]] = []
     ownership_digest = hashlib.sha256(ownership.encode("utf-8")).hexdigest()[:12]
     for original_group in groups:
@@ -340,10 +375,10 @@ def _transform_groups(
         transformed.append((base_name, original_key, group))
 
     name_counts: dict[str, int] = {}
+    base_name_counts = Counter(item[0] for item in transformed)
     result: list[dict[str, object]] = []
     for base_name, original_key, group in sorted(transformed, key=lambda item: (item[0], item[1])):
-        matching_count = sum(item[0] == base_name for item in transformed)
-        if matching_count > 1:
+        if base_name_counts[base_name] > 1:
             digest = hashlib.sha256(original_key.encode()).hexdigest()[:8]
             occurrence = name_counts.get(f"{base_name}-{digest}", 0) + 1
             name_counts[f"{base_name}-{digest}"] = occurrence
@@ -351,6 +386,43 @@ def _transform_groups(
             group["name"] = f"{base_name}-{digest}{suffix}"
         result.append(group)
     return result
+
+
+def _nested_string_bytes(value: object) -> int:
+    """Count existing string work without constructing serialized output."""
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    if isinstance(value, dict):
+        return sum(_nested_string_bytes(key) + _nested_string_bytes(item) for key, item in value.items())
+    if isinstance(value, list):
+        return sum(_nested_string_bytes(item) for item in value)
+    return 0
+
+
+def _enforce_transform_budget(
+    groups: list[dict[str, object]],
+    artifact_id: str,
+    identifier: str,
+    matcher: str,
+    topology_labels: dict[str, str],
+) -> None:
+    """Reject projected amplification before copying or replacing strings."""
+    projected_bytes = 0
+    placeholder = "%%juju_topology%%"
+    matcher_bytes = len(matcher.encode("utf-8"))
+    injected_label_bytes = sum(
+        len(key.encode("utf-8")) + len(value.encode("utf-8")) + 8 for key, value in topology_labels.items()
+    )
+    for original_group in groups:
+        projected_bytes += _nested_string_bytes(original_group)
+        projected_bytes += len(identifier.encode("utf-8")) + len(artifact_id.encode("utf-8")) + 64
+        rules = original_group.get("rules", [])
+        for rule in rules if isinstance(rules, list) else []:
+            if isinstance(rule, dict) and isinstance(expression := rule.get("expr"), str):
+                projected_bytes += expression.count(placeholder) * max(0, matcher_bytes - len(placeholder))
+            projected_bytes += injected_label_bytes
+        if projected_bytes > MAX_TRANSFORMED_ARTIFACT_BYTES:
+            raise ValueError("limit")
 
 
 def _identity(raw_artifact: Any) -> tuple[str, str]:
@@ -384,6 +456,20 @@ def _ownership_topology(payload: Any) -> tuple[str, str] | None:
     return model_uuid, application
 
 
+def _validated_build_topology(
+    payload: Any,
+) -> tuple[str, str, dict[str, str]] | None:
+    """Return all bounded transformation topology or fail closed."""
+    ownership = _ownership_topology(payload)
+    if ownership is None:
+        return None
+    try:
+        labels = _topology_labels(payload)
+    except ValueError:
+        return None
+    return ownership[0], ownership[1], labels
+
+
 def _backend_accepts(
     validator: RuleValidator | None,
     artifact_type: str,
@@ -396,6 +482,20 @@ def _backend_accepts(
         return False
 
 
+def _append_bounded_error(errors: list[str], error: str) -> bool:
+    """Append one safe detail within the reporting cap and report suppression."""
+    if len(errors) >= MAX_RULE_ERROR_DETAILS:
+        return True
+    errors.append(error)
+    return False
+
+
+def _append_truncation_summary(errors: list[str], suppressed_errors: int) -> None:
+    """Append the single aggregate summary when error details were suppressed."""
+    if suppressed_errors:
+        errors.append(f"artifacts: truncated ({suppressed_errors} additional errors)")
+
+
 def build_rule_state(payload: Any, *, validator: RuleValidator | None = None) -> RuleBuildResult:
     """Decode each v3 artifact independently into deterministic backend state."""
     if _value(payload, "schema_version", 1) != 3:
@@ -404,14 +504,11 @@ def build_rule_state(payload: Any, *, validator: RuleValidator | None = None) ->
     prometheus: dict[str, list[dict[str, object]]] = {}
     loki: dict[str, list[dict[str, object]]] = {}
     errors: list[str] = []
-    artifacts = sorted(
-        _value(payload, "artifacts", []) or [],
-        key=lambda artifact: _identity(artifact),
-    )
-    overflow_artifacts = artifacts[MAX_RULE_ARTIFACTS:]
-    artifacts = artifacts[:MAX_RULE_ARTIFACTS]
-    ownership_topology = _ownership_topology(payload)
-    if ownership_topology is None:
+    raw_artifacts = _value(payload, "artifacts", []) or []
+    artifacts = heapq.nsmallest(MAX_RULE_ARTIFACTS, raw_artifacts, key=_identity)
+    suppressed_errors = max(0, len(raw_artifacts) - len(artifacts))
+    build_topology = _validated_build_topology(payload)
+    if build_topology is None:
         return RuleBuildResult(
             prometheus={},
             loki={},
@@ -419,9 +516,7 @@ def build_rule_state(payload: Any, *, validator: RuleValidator | None = None) ->
                 f"{artifact_type}/{artifact_id}: topology" for artifact_type, artifact_id in map(_identity, artifacts)
             ),
         )
-    model_uuid, application = ownership_topology
-
-    topology_labels = _topology_labels(payload)
+    model_uuid, application, topology_labels = build_topology
     decoded_bytes = 0
     for raw_artifact in artifacts:
         artifact_type, artifact_id = _identity(raw_artifact)
@@ -429,7 +524,7 @@ def build_rule_state(payload: Any, *, validator: RuleValidator | None = None) ->
             artifact = ObservabilityArtifact.model_validate(raw_artifact)
         except ValidationError as exc:
             category = _validation_category(exc)
-            errors.append(f"{artifact_type}/{artifact_id}: {category}")
+            suppressed_errors += _append_bounded_error(errors, f"{artifact_type}/{artifact_id}: {category}")
             continue
         try:
             decoded = _decode_bounded(
@@ -438,7 +533,7 @@ def build_rule_state(payload: Any, *, validator: RuleValidator | None = None) ->
             )
         except _DecodeError as exc:
             decoded_bytes += exc.decoded_bytes
-            errors.append(f"{artifact_type}/{artifact_id}: {exc.category}")
+            suppressed_errors += _append_bounded_error(errors, f"{artifact_type}/{artifact_id}: {exc.category}")
             continue
         decoded_bytes += len(decoded)
         try:
@@ -457,16 +552,17 @@ def build_rule_state(payload: Any, *, validator: RuleValidator | None = None) ->
             category = _validation_category(exc)
         else:
             if not _backend_accepts(validator, artifact.artifact_type, transformed):
-                errors.append(f"{artifact_type}/{artifact_id}: validation")
+                suppressed_errors += _append_bounded_error(
+                    errors,
+                    f"{artifact_type}/{artifact_id}: validation",
+                )
                 continue
             target = prometheus if artifact.artifact_type == "prometheus_alert_rules" else loki
             target[ownership] = transformed
             continue
-        errors.append(f"{artifact_type}/{artifact_id}: {category}")
+        suppressed_errors += _append_bounded_error(errors, f"{artifact_type}/{artifact_id}: {category}")
 
-    errors.extend(
-        f"{artifact_type}/{artifact_id}: limit" for artifact_type, artifact_id in map(_identity, overflow_artifacts)
-    )
+    _append_truncation_summary(errors, suppressed_errors)
     return RuleBuildResult(
         prometheus=dict(sorted(prometheus.items())),
         loki=dict(sorted(loki.items())),

@@ -55,8 +55,9 @@ relation.
 
 Alloy validates bounded rule documents and their PromQL/LogQL with packaged
 `cos-tool`, an internal hook-time CLI rather than a service or plugin. It
-injects labels from the original payload's source topology exactly once
-without rewriting expressions, names, or non-topology labels. A malformed,
+injects labels from the original payload's source topology exactly once.
+Placeholder-bearing expressions and group names are rewritten for topology
+injection and deterministic scoping; non-topology labels are preserved. A malformed,
 future-version, or structurally invalid outer payload retains the whole
 relation's leader-shared LKG. Within a valid v3 payload, a malformed artifact
 retains only its own LKG. Valid omission and relation removal withdraw owned

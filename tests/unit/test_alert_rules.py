@@ -31,7 +31,7 @@ ALLOY_SUB_ALERT_RULES = (
     Path(__file__).resolve().parents[5]
     / "alloy-sub-operator/.worktrees/machine-observability-v3/src/alert_rules.py"
 )
-ALLOY_SUB_ALERT_RULES_SHA256 = "b00720bdb5b834475705c87be6755f67712932821493debcd75cb917c67b947a"
+ALLOY_SUB_ALERT_RULES_SHA256 = "e1416d9ef83175da7739c8c7750976c6e1770c1f7f5bc8b874ab40b9eb71f70c"
 
 TOPOLOGY = {
     "model": 'prod\\west"1',
@@ -846,9 +846,9 @@ def test_rule_artifact_limit_bounds_decode_parse_and_validation_work(monkeypatch
     assert decode_calls == MAX_RULE_ARTIFACTS
     assert parse_calls == MAX_RULE_ARTIFACTS
     assert validation_calls == MAX_RULE_ARTIFACTS
-    assert len(result.errors) == artifact_count - MAX_RULE_ARTIFACTS
-    assert result.errors[0] == "prometheus_alert_rules/rule-032: limit"
-    assert result.errors[-1] == (f"prometheus_alert_rules/rule-{artifact_count - 1:03d}: limit")
+    assert result.errors == (
+        f"artifacts: truncated ({artifact_count - MAX_RULE_ARTIFACTS} additional errors)",
+    )
 
 
 def test_publish_rule_groups_writes_full_compact_desired_state_to_every_relation():
