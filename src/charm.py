@@ -741,7 +741,12 @@ class AlloyCharm(ops.CharmBase):
                 continue
             artifact_type = artifact.get("artifact_type")
             artifact_id = artifact.get("artifact_id")
-            if not isinstance(artifact_type, str) or not isinstance(artifact_id, str):
+            if (
+                not isinstance(artifact_type, str)
+                or artifact_type not in _RULE_ARTIFACT_TYPES
+                or not isinstance(artifact_id, str)
+                or _CACHE_ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None
+            ):
                 logger.warning(
                     "Invalid machine-observability rule payload on relation %s: identity",
                     relation_id,

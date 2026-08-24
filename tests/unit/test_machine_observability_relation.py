@@ -664,6 +664,79 @@ def test_unidentifiable_artifact_preserves_unknown_lkg_while_valid_sibling_updat
     assert any(group["name"].endswith("sibling-SIBLING-V3") for group in groups)
 
 
+@pytest.mark.parametrize(
+    ("unsafe_type", "unsafe_id"),
+    [
+        ("unknown_alert_rules", "owned"),
+        ("prometheus_alert_rules", "INVALID ID"),
+    ],
+)
+def test_unsafe_artifact_identity_preserves_unknown_lkg_while_valid_sibling_updates(
+    monkeypatch,
+    unsafe_type,
+    unsafe_id,
+):
+    import charm as charm_module
+
+    monkeypatch.setattr(
+        charm_module.AlloyCharm, "_configure", lambda *args, **kwargs: ops.ActiveStatus()
+    )
+    harness = testing.Harness(AlloyCharm)
+    harness.set_leader(True)
+    harness.begin()
+    machine = harness.add_relation("machine-observability", "polkadot")
+    prometheus = harness.add_relation("send-remote-write", "mimir")
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(
+                    _rule_artifact("prometheus_alert_rules", "owned", "OWNED-V1"),
+                    _rule_artifact("prometheus_alert_rules", "sibling", "SIBLING-V1"),
+                )
+            )
+        },
+    )
+    unsafe = _rule_artifact("prometheus_alert_rules", "placeholder", "UNSAFE")
+    unsafe["artifact_type"] = unsafe_type
+    unsafe["artifact_id"] = unsafe_id
+
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(
+                    _rule_artifact("prometheus_alert_rules", "sibling", "SIBLING-V2"),
+                    unsafe,
+                )
+            )
+        },
+    )
+
+    groups = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert any(group["name"].endswith("owned-OWNED-V1") for group in groups)
+    assert any(group["name"].endswith("sibling-SIBLING-V2") for group in groups)
+
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(_rule_artifact("prometheus_alert_rules", "sibling", "SIBLING-V3"))
+            )
+        },
+    )
+    groups = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert not any(group["name"].endswith("owned-OWNED-V1") for group in groups)
+    assert any(group["name"].endswith("sibling-SIBLING-V3") for group in groups)
+
+
 def test_duplicate_identifiable_artifacts_retain_whole_relation_lkg(monkeypatch):
     import charm as charm_module
 
