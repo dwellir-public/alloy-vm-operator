@@ -427,6 +427,90 @@ def test_config_changed_reconciles_rules_once_after_configure(monkeypatch):
     assert calls == ["configure", "configure", "rules"]
 
 
+def test_machine_relation_config_exception_does_not_starve_rule_reconcile_and_recovery(
+    monkeypatch,
+):
+    fail_config = False
+
+    def configure(*_args, **_kwargs):
+        if fail_config:
+            raise RuntimeError("configuration failed")
+        return ops.ActiveStatus("configured")
+
+    monkeypatch.setattr(AlloyCharm, "_configure", configure)
+    harness = testing.Harness(AlloyCharm)
+    harness.set_leader(True)
+    harness.begin()
+    machine = harness.add_relation("machine-observability", "polkadot")
+    prometheus = harness.add_relation("send-remote-write", "mimir")
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(_rule_artifact("prometheus_alert_rules", "owned", "RULE-V1"))
+            )
+        },
+    )
+
+    fail_config = True
+    with pytest.raises(RuntimeError, match="configuration failed"):
+        harness.update_relation_data(
+            machine,
+            "polkadot",
+            {
+                "payload": json.dumps(
+                    _v3_payload(_rule_artifact("prometheus_alert_rules", "owned", "RULE-V2"))
+                )
+            },
+        )
+    groups = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert groups[0]["name"].endswith("owned-RULE-V2")
+
+    fail_config = False
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(_rule_artifact("prometheus_alert_rules", "owned", "RULE-V3"))
+            )
+        },
+    )
+    groups = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert groups[0]["name"].endswith("owned-RULE-V3")
+    assert harness.charm.unit.status.name == "active"
+
+
+def test_machine_relation_event_configures_then_reconciles_rules_once(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        AlloyCharm,
+        "_configure",
+        lambda *_args, **_kwargs: calls.append("configure") or ops.ActiveStatus("configured"),
+    )
+    monkeypatch.setattr(
+        AlloyCharm,
+        "_reconcile_rule_groups",
+        lambda *_args, **_kwargs: calls.append("rules"),
+    )
+    harness = testing.Harness(AlloyCharm)
+    harness.begin()
+    calls.clear()
+    machine = harness.add_relation("machine-observability", "polkadot")
+    harness.add_relation_unit(machine, "polkadot/0")
+
+    assert calls == ["configure", "rules"]
+
+    calls.clear()
+    harness.update_relation_data(machine, "polkadot", {"payload": json.dumps(_v3_payload())})
+    assert calls == ["configure", "rules"]
+
+
 @pytest.mark.parametrize(
     ("artifact_types", "missing_messages"),
     [

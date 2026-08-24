@@ -190,16 +190,16 @@ class AlloyCharm(ops.CharmBase):
             self._remote_write_consumer.on.endpoints_changed,
             self._on_metrics_relation_changed,
         )
-        for event in (
-            self.on["machine-observability"].relation_joined,
-            self.on["machine-observability"].relation_changed,
-            self.on["machine-observability"].relation_broken,
+        for event_name in (
+            "relation_joined",
+            "relation_changed",
+            "relation_broken",
+            "relation_departed",
         ):
-            self.framework.observe(event, self._on_observability_endpoint_changed)
-        self.framework.observe(
-            self.on["machine-observability"].relation_departed,
-            self._on_rule_relation_event,
-        )
+            self.framework.observe(
+                getattr(self.on["machine-observability"], event_name),
+                self._on_machine_observability_relation_event,
+            )
         for event in (
             self.on["grafana-cloud-config"].relation_joined,
             self.on["grafana-cloud-config"].relation_changed,
@@ -214,7 +214,7 @@ class AlloyCharm(ops.CharmBase):
             self.on[SYSLOG_RELATION_NAME].relation_broken,
             self._on_syslog_receiver_relation_event,
         )
-        for relation_name in ("machine-observability", "send-loki-logs", "send-remote-write"):
+        for relation_name in ("send-loki-logs", "send-remote-write"):
             for event_name in ("relation_joined", "relation_changed", "relation_broken"):
                 self.framework.observe(
                     getattr(self.on[relation_name], event_name),
@@ -303,6 +303,13 @@ class AlloyCharm(ops.CharmBase):
             self.unit.status = status
         elif not isinstance(self.unit.status, ops.BlockedStatus):
             self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
+
+    def _on_machine_observability_relation_event(self, event: ops.RelationEvent) -> None:
+        """Reconcile config and rules under one relation event owner."""
+        try:
+            self._on_observability_endpoint_changed(event)
+        finally:
+            self._on_rule_relation_event(event)
 
     def _on_update_status(self, event):
         """Handle periodic status updates (detect drift and workload health)."""
