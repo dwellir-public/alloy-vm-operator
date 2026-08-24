@@ -18,7 +18,9 @@ from typing import TypeAlias, cast
 
 import ops
 from charms.dwellir_observability.v0.machine_observability import (
+    MAX_SERIALIZED_PAYLOAD_BYTES,
     MachineObservabilityPayload,
+    PayloadTooLargeError,
 )
 from charms.grafana_cloud_integrator.v0.cloud_config_requirer import GrafanaCloudConfigRequirer
 from charms.loki_k8s.v1.loki_push_api import LokiPushApiConsumer
@@ -26,6 +28,7 @@ from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointConsumer
 from charms.prometheus_k8s.v1.prometheus_remote_write import PrometheusRemoteWriteConsumer
 from cosl import JujuTopology
 from pydantic import ValidationError
+from pydantic_core import from_json
 
 import alloy
 from alert_rules import (
@@ -76,6 +79,24 @@ _RULE_ARTIFACT_TYPES = {
 }
 _CACHE_ARTIFACT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 RuleCacheState: TypeAlias = dict[str, dict[str, object]]
+
+
+class PayloadDecodeError(ValueError):
+    """Represent a safely categorized bounded JSON decoding failure."""
+
+
+def parse_machine_observability_payload_json(raw_payload: str) -> object:
+    """Parse raw relation JSON after enforcing the shared UTF-8 ceiling."""
+    payload_bytes = len(raw_payload.encode("utf-8"))
+    if payload_bytes > MAX_SERIALIZED_PAYLOAD_BYTES:
+        raise PayloadTooLargeError(
+            f"serialized machine-observability payload is {payload_bytes} bytes; "
+            f"maximum is {MAX_SERIALIZED_PAYLOAD_BYTES} bytes"
+        )
+    try:
+        return from_json(raw_payload)
+    except ValueError as exc:
+        raise PayloadDecodeError("json") from exc
 
 
 def _valid_ownership_component(value: object) -> bool:
@@ -401,11 +422,13 @@ class AlloyCharm(ops.CharmBase):
         """Parse current relation input and apply it to the relation's durable LKG."""
         raw_payload = relation.data[relation.app].get("payload", "{}") if relation.app else "{}"
         try:
-            payload = json.loads(raw_payload)
-        except json.JSONDecodeError:
+            payload = parse_machine_observability_payload_json(raw_payload)
+        except (PayloadDecodeError, PayloadTooLargeError) as exc:
+            category = "size" if isinstance(exc, PayloadTooLargeError) else "json"
             logger.warning(
-                "Invalid machine-observability rule payload on relation %s: json",
+                "Invalid machine-observability rule payload on relation %s: %s",
                 relation.id,
+                category,
             )
             return None
         return self._build_relation_rule_state(payload, previous, str(relation.id))
@@ -665,14 +688,18 @@ class AlloyCharm(ops.CharmBase):
         snapshot = self._validated_rule_snapshot(payload, relation_id)
         if snapshot is None:
             return None
-        schema_version, identities = snapshot
+        schema_version, identities, identities_complete = snapshot
         if schema_version in (1, 2):
             return {}
 
         result = build_rule_state(payload, validator=self._validate_artifact_rules)
         for error in result.errors:
             logger.warning("Invalid machine-observability artifact: %s", error)
-        desired = {identity: previous[identity] for identity in identities if identity in previous}
+        desired = (
+            dict(previous)
+            if not identities_complete
+            else {identity: previous[identity] for identity in identities if identity in previous}
+        )
         for backend, ownership_state in (
             ("prometheus", result.prometheus),
             ("loki", result.loki),
@@ -696,20 +723,22 @@ class AlloyCharm(ops.CharmBase):
     def _validated_rule_snapshot(
         payload: object,
         relation_id: str,
-    ) -> tuple[int, list[str]] | None:
+    ) -> tuple[int, list[str], bool] | None:
         """Validate outer payload structure without rejecting individual artifacts."""
         header = AlloyCharm._validated_rule_snapshot_header(payload, relation_id)
         if header is None:
             return None
         schema_version, artifacts = header
         identities: list[str] = []
+        identities_complete = True
         for artifact in artifacts:
             if not isinstance(artifact, dict):
                 logger.warning(
                     "Invalid machine-observability rule payload on relation %s: schema",
                     relation_id,
                 )
-                return None
+                identities_complete = False
+                continue
             artifact_type = artifact.get("artifact_type")
             artifact_id = artifact.get("artifact_id")
             if not isinstance(artifact_type, str) or not isinstance(artifact_id, str):
@@ -717,7 +746,8 @@ class AlloyCharm(ops.CharmBase):
                     "Invalid machine-observability rule payload on relation %s: identity",
                     relation_id,
                 )
-                return None
+                identities_complete = False
+                continue
             identities.append(f"{artifact_type}/{artifact_id}")
         if len(identities) != len(set(identities)):
             logger.warning(
@@ -725,7 +755,7 @@ class AlloyCharm(ops.CharmBase):
                 relation_id,
             )
             return None
-        return schema_version, identities
+        return schema_version, identities, identities_complete
 
     @staticmethod
     def _validated_rule_snapshot_header(
@@ -1497,7 +1527,7 @@ class AlloyCharm(ops.CharmBase):
         """Validate telemetry independently from v3 artifacts using an artifact-free copy."""
         remote_app = relation.app
         raw_payload = relation.data[remote_app].get("payload", "{}") if remote_app else "{}"
-        parsed = json.loads(raw_payload)
+        parsed = parse_machine_observability_payload_json(raw_payload)
         if not isinstance(parsed, dict):
             raise ValueError("schema")
         if parsed.get("schema_version", 1) == 3:

@@ -15,9 +15,13 @@ from ops import testing
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
 
-from charms.dwellir_observability.v0.machine_observability import encode_artifact
+from charms.dwellir_observability.v0.machine_observability import (
+    MAX_SERIALIZED_PAYLOAD_BYTES,
+    PayloadTooLargeError,
+    encode_artifact,
+)
 
-from charm import AlloyCharm
+from charm import AlloyCharm, PayloadDecodeError, parse_machine_observability_payload_json
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +30,27 @@ def _accept_backend_rules(monkeypatch):
 
 
 DEFAULT_ARGS = "--server.http.listen-addr=0.0.0.0:6987"
+
+
+def test_raw_payload_parser_allows_exact_limit_and_rejects_one_extra_byte():
+    base = '{"schema_version":3,"artifacts":[]}'
+    exact = base + " " * (MAX_SERIALIZED_PAYLOAD_BYTES - len(base.encode("utf-8")))
+
+    assert parse_machine_observability_payload_json(exact) == {
+        "schema_version": 3,
+        "artifacts": [],
+    }
+    with pytest.raises(PayloadTooLargeError):
+        parse_machine_observability_payload_json(exact + " ")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["{", '{"schema_version":3,"artifacts":' + "[" * 10_000 + "]" * 10_000 + "}"],
+)
+def test_raw_payload_parser_normalizes_invalid_and_deep_json(raw):
+    with pytest.raises(PayloadDecodeError):
+        parse_machine_observability_payload_json(raw)
 
 
 def _patch_runtime():
@@ -578,6 +603,108 @@ def test_bad_artifact_does_not_block_valid_sibling_and_fixed_payload_converges(
     assert "checksum" not in harness.charm.unit.status.message
 
 
+def test_unidentifiable_artifact_preserves_unknown_lkg_while_valid_sibling_updates(
+    monkeypatch,
+):
+    import charm as charm_module
+
+    monkeypatch.setattr(
+        charm_module.AlloyCharm, "_configure", lambda *args, **kwargs: ops.ActiveStatus()
+    )
+    harness = testing.Harness(AlloyCharm)
+    harness.set_leader(True)
+    harness.begin()
+    machine = harness.add_relation("machine-observability", "polkadot")
+    prometheus = harness.add_relation("send-remote-write", "mimir")
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(
+                    _rule_artifact("prometheus_alert_rules", "owned", "OWNED-V1"),
+                    _rule_artifact("prometheus_alert_rules", "sibling", "SIBLING-V1"),
+                )
+            )
+        },
+    )
+
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(
+                    _rule_artifact("prometheus_alert_rules", "sibling", "SIBLING-V2"),
+                    None,
+                )
+            )
+        },
+    )
+
+    groups = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert any(group["name"].endswith("owned-OWNED-V1") for group in groups)
+    assert any(group["name"].endswith("sibling-SIBLING-V2") for group in groups)
+
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(_rule_artifact("prometheus_alert_rules", "sibling", "SIBLING-V3"))
+            )
+        },
+    )
+    groups = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert not any(group["name"].endswith("owned-OWNED-V1") for group in groups)
+    assert any(group["name"].endswith("sibling-SIBLING-V3") for group in groups)
+
+
+def test_duplicate_identifiable_artifacts_retain_whole_relation_lkg(monkeypatch):
+    import charm as charm_module
+
+    monkeypatch.setattr(
+        charm_module.AlloyCharm, "_configure", lambda *args, **kwargs: ops.ActiveStatus()
+    )
+    harness = testing.Harness(AlloyCharm)
+    harness.set_leader(True)
+    harness.begin()
+    machine = harness.add_relation("machine-observability", "polkadot")
+    prometheus = harness.add_relation("send-remote-write", "mimir")
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(_rule_artifact("prometheus_alert_rules", "owned", "LAST-GOOD"))
+            )
+        },
+    )
+
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(
+                    _rule_artifact("prometheus_alert_rules", "owned", "AMBIGUOUS-A"),
+                    _rule_artifact("prometheus_alert_rules", "owned", "AMBIGUOUS-B"),
+                )
+            )
+        },
+    )
+
+    groups = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert len(groups) == 1
+    assert groups[0]["name"].endswith("owned-LAST-GOOD")
+
+
 def test_semantically_invalid_rule_retains_artifact_lkg(monkeypatch):
     import charm as charm_module
 
@@ -757,6 +884,57 @@ def test_malformed_outer_payload_retains_rules_and_v2_withdraws_them(monkeypatch
     assert json.loads(
         harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
     ) == {"groups": []}
+
+
+@pytest.mark.parametrize("invalid_kind", ["oversized", "deep"])
+def test_bounded_invalid_payload_retains_telemetry_config_and_relation_rule_lkg(
+    invalid_kind,
+):
+    writes: list[str] = []
+    with ExitStack() as stack:
+        for manager in _patch_runtime():
+            stack.enter_context(manager)
+        stack.enter_context(
+            patch(
+                "charm.PrometheusRemoteWriteConsumer.endpoints",
+                new_callable=PropertyMock,
+                return_value=[{"url": "http://mimir:9009/api/v1/push"}],
+            )
+        )
+        stack.enter_context(
+            patch(
+                "charm.alloy.write_config_text",
+                side_effect=lambda config_text, **_: writes.append(config_text),
+            )
+        )
+        harness = testing.Harness(AlloyCharm)
+        harness.set_leader(True)
+        harness.begin()
+        machine = harness.add_relation("machine-observability", "polkadot")
+        prometheus = harness.add_relation("send-remote-write", "mimir")
+        valid = _v3_payload(_rule_artifact("prometheus_alert_rules", "good", "LAST-GOOD"))
+        valid["systemd_units"] = ["polkadot.service"]
+        harness.update_relation_data(machine, "polkadot", {"payload": json.dumps(valid)})
+        writes_after_valid = list(writes)
+        assert writes_after_valid
+        assert "polkadot.service" in writes_after_valid[-1]
+
+        if invalid_kind == "oversized":
+            raw_invalid = json.dumps(_v3_payload())
+            raw_invalid += " " * (
+                MAX_SERIALIZED_PAYLOAD_BYTES + 1 - len(raw_invalid.encode("utf-8"))
+            )
+        else:
+            raw_invalid = '{"schema_version":3,"artifacts":' + "[" * 10_000 + "]" * 10_000 + "}"
+        harness.update_relation_data(machine, "polkadot", {"payload": raw_invalid})
+
+    assert writes == writes_after_valid
+    groups = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert len(groups) == 1
+    assert groups[0]["name"].endswith("good-LAST-GOOD")
+    assert harness.charm.unit.status.name == "blocked"
 
 
 @pytest.mark.parametrize(
