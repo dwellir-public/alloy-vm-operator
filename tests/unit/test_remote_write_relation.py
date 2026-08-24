@@ -1,4 +1,4 @@
-import re
+import json
 from unittest.mock import patch
 
 from ops import testing
@@ -10,13 +10,7 @@ MODEL_NAME = "tenant-routing"
 MODEL_UUID = "00000000-0000-4000-8000-000000000111"
 
 
-def _expected_tenant_id(application: str, model_uuid: str) -> str:
-    short_model_uuid = re.sub(r"[^a-z0-9]+", "", model_uuid.lower())[:8]
-    base = f"{application}-{short_model_uuid}" if short_model_uuid else application
-    return re.sub(r"[^a-z0-9-]+", "-", base.lower()).strip("-")
-
-
-def test_send_remote_write_relation_publishes_tenant_metadata():
+def test_send_remote_write_relation_publishes_empty_rules_and_standard_metadata():
     with (
         patch("charm.alloy.ensure_config_dir_permissions"),
         patch("charm.alloy.verify_config"),
@@ -40,7 +34,11 @@ def test_send_remote_write_relation_publishes_tenant_metadata():
 
         relation_data = harness.get_relation_data(relation_id, harness.charm.app.name)
 
-    assert relation_data["application"] == harness.charm.app.name
-    assert relation_data["model"] == MODEL_NAME
-    assert relation_data["model_uuid"] == MODEL_UUID
-    assert relation_data["tenant-id"] == _expected_tenant_id(harness.charm.app.name, MODEL_UUID)
+    assert json.loads(relation_data["alert_rules"]) == {"groups": []}
+    assert json.loads(relation_data["metadata"]) == {
+        "application": harness.charm.app.name,
+        "model": MODEL_NAME,
+        "model_uuid": MODEL_UUID,
+        "unit": f"{harness.charm.app.name}/0",
+    }
+    assert "tenant-id" not in relation_data

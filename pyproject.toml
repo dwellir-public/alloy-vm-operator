@@ -5,7 +5,7 @@ requires-python = ">=3.10"
 
 dependencies = [
     "ops>=3,<4",
-    "PyYAML",
+    "pyyaml>=6,<7",
     "cosl",
 ]
 
@@ -69,7 +69,10 @@ lint.extend-ignore = [
     "D413",
 ]
 extend-exclude = ["__pycache__", "*.egg_info"]
-lint.per-file-ignores = {"tests/*" = ["D100","D101","D102","D103","D104"]}
+lint.per-file-ignores = {"src/alert_rules.py" = ["E501"], "tests/*" = ["D100","D101","D102","D103","D104"]}
+
+[tool.ruff.format]
+exclude = ["src/alert_rules.py"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
