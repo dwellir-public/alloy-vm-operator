@@ -637,3 +637,17 @@ the expected log line content in Grafana Explore or through Loki's API.
 ```bash
 juju ssh alloy-vm/<unit> 'journalctl -n 20 --no-pager -u snap.lxd.daemon.service'
 ```
+
+
+## Alert rule transport
+
+Alert rules use the receiver's `alert_rules_encodings` advertisement to negotiate
+Canonical-compatible LZMA/base64 encoding in the existing `alert_rules` field.
+Legacy receivers continue to receive JSON. The bounded transport helper is owned
+by `dwellir-observability-reference`; publish the owner library before releasing
+consumer builds. The vendored candidate is for coordinated review and local tests.
+
+Upgrade Loki/Mimir receivers and gateways before collectors when aggregates exceed
+the JSON size limit. Encoded values remain below 60 KiB, with the collector's
+existing stricter publication guard retained. Compression does not change source
+topology, machine-observability schema/artifact encoding, or artifact-count limits.
