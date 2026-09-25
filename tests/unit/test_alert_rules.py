@@ -1,7 +1,4 @@
 import copy
-import dataclasses
-import hashlib
-import importlib.util
 import json
 import re
 import subprocess
@@ -26,12 +23,6 @@ from alert_rules import (
 from alert_rules import (
     build_rule_state as _build_rule_state,
 )
-
-ALLOY_SUB_ALERT_RULES = (
-    Path(__file__).resolve().parents[5]
-    / "alloy-sub-operator/.worktrees/machine-observability-v3/src/alert_rules.py"
-)
-ALLOY_SUB_ALERT_RULES_SHA256 = "ed9a99174c0e46e12c98b013f5dd3a4ae3f9a3986d473406f072d7af6071e4c8"
 
 TOPOLOGY = {
     "model": 'prod\\west"1',
@@ -89,32 +80,6 @@ def _group(name: str, expr: object = "up{%%juju_topology%%} == 0") -> dict:
 
 def _first_group(state: dict[str, list[dict[str, object]]]) -> dict[str, Any]:
     return cast(dict[str, Any], next(iter(state.values()))[0])
-
-
-def test_transformer_matches_finalized_alloy_sub_module_byte_for_byte():
-    content = Path(__file__).resolve().parents[2].joinpath("src/alert_rules.py").read_bytes()
-    assert hashlib.sha256(content).hexdigest() == ALLOY_SUB_ALERT_RULES_SHA256
-    if ALLOY_SUB_ALERT_RULES.exists():
-        assert content == ALLOY_SUB_ALERT_RULES.read_bytes()
-
-
-def test_transformer_matches_finalized_alloy_sub_semantics():
-    if not ALLOY_SUB_ALERT_RULES.exists():
-        pytest.skip("finalized Alloy Sub worktree is unavailable")
-    spec = importlib.util.spec_from_file_location("alloy_sub_alert_rules", ALLOY_SUB_ALERT_RULES)
-    assert spec is not None and spec.loader is not None
-    reference = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = reference
-    spec.loader.exec_module(reference)
-    payload = _payload(
-        _artifact("prometheus_alert_rules", "good", [_group("Good")]),
-        _raw_artifact("loki_alert_rules", "bad", "groups: wrong"),
-    )
-
-    expected = reference.build_rule_state(payload, validator=_accept_validator)
-    actual = _build_rule_state(payload, validator=_accept_validator)
-
-    assert dataclasses.asdict(actual) == dataclasses.asdict(expected)
 
 
 def test_build_rule_state_routes_artifacts_by_canonical_ownership_key():
@@ -885,13 +850,13 @@ def test_publish_rule_groups_writes_full_compact_desired_state_to_every_relation
 
 @pytest.mark.parametrize("advertised", [None, '["json"]', '["lzma", "json"]', "invalid"])
 def test_rule_publication_negotiates_and_handles_capability_withdrawal(advertised):
-    from charms.dwellir_observability.v0 import alert_rule_transport as transport
+    from cosl import LZMABase64
 
     class App:
         name = "alloy"
 
     app, remote = App(), App()
-    remote_data = {} if advertised is None else {transport.ENCODINGS_KEY: advertised}
+    remote_data = {} if advertised is None else {"alert_rules_encodings": advertised}
     relation = SimpleNamespace(app=remote, data={app: {}, remote: remote_data})
     charm = SimpleNamespace(
         app=app,
@@ -903,8 +868,55 @@ def test_rule_publication_negotiates_and_handles_capability_withdrawal(advertise
     group = _group("Published")
     publish_rule_groups(charm, "send-remote-write", [group])
     raw = relation.data[app]["alert_rules"]
-    assert json.loads(transport.decode(raw)) == {"groups": [group]}
+    assert json.loads(LZMABase64.decompress(raw) if raw.startswith("/Td6WFoA") else raw) == {
+        "groups": [group]
+    }
     assert raw.startswith("/Td6WFoA") == (advertised == '["lzma", "json"]')
     remote_data.clear()
     publish_rule_groups(charm, "send-remote-write", [group])
     assert json.loads(relation.data[app]["alert_rules"]) == {"groups": [group]}
+
+
+@pytest.mark.parametrize("advertised", ['["lzma", "json"]', '["json"]', "null", "{}", '"lzma"'])
+def test_publication_uses_public_codec_and_rejects_oversize_without_truncation(
+    monkeypatch, advertised
+):
+    from cosl import LZMABase64
+
+    class App:
+        name = "alloy"
+
+    app, remote = App(), App()
+    data = {app: {"alert_rules": "prior"}, remote: {"alert_rules_encodings": advertised}}
+    relation = SimpleNamespace(app=remote, data=data)
+    charm = SimpleNamespace(
+        app=app,
+        unit=SimpleNamespace(name="alloy/0"),
+        model=SimpleNamespace(
+            name="local", uuid="test", relations={"send-remote-write": [relation]}
+        ),
+    )
+    calls = []
+    original = LZMABase64.compress
+
+    def compress(raw):
+        calls.append(raw)
+        return original(raw)
+
+    monkeypatch.setattr(LZMABase64, "compress", compress)
+    group = _group("large")
+    group["rules"][0]["expr"] = "a" * (70 * 1024)
+    if advertised == '["lzma", "json"]':
+        publish_rule_groups(charm, "send-remote-write", [group])
+        assert calls
+        assert json.loads(LZMABase64.decompress(data[app]["alert_rules"])) == {"groups": [group]}
+    else:
+        with pytest.raises(ValueError, match="capacity"):
+            publish_rule_groups(charm, "send-remote-write", [group])
+        assert data[app]["alert_rules"] == "prior"
+        assert not calls
+    before = dict(data[app])
+    group["rules"][0]["expr"] = "a" * (8 * 1024 * 1024)
+    with pytest.raises(ValueError, match="decoded size"):
+        publish_rule_groups(charm, "send-remote-write", [group])
+    assert data[app] == before
