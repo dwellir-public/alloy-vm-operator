@@ -11,6 +11,7 @@
 - consume authenticated cloud sink config over `grafana-cloud-config`
 - receive logs over `syslog-receiver`
 - forward logs over `send-loki-logs`
+- validate and forward v3 Prometheus and Loki alert rules
 
 `src/charm.py` stays orchestration-focused. Alloy service control and file management stay in
 [`src/alloy.py`](/home/erik/Loki-project/alloy-vm-operator/src/alloy.py), and Alloy config
@@ -37,9 +38,29 @@ translated into the same `MetricsScrapeJob` model as relation-derived jobs, and 
 rendered Alloy config only when a `send-remote-write` endpoint exists.
 
 For shared-machine aggregation, principal charms can instead publish
-`machine-observability` payloads. `alloy-vm` requires the v2 contract with
-`source_topology`, translates those payloads into the same internal
+`machine-observability` payloads. `alloy-vm` requires the v2 or v3 contract with
+`source_topology`, translates their telemetry into the same internal
 `MetricsScrapeJob` shape, and renders them into the shared remote-write path.
+
+## Alert-rule flow
+
+V3 artifacts are compressed, checksummed complete desired state. The consumer
+applies size/tree/work bounds, injects source topology, then validates PromQL
+or LogQL with packaged `cos-tool`. The CLI runs only during reconciliation and
+is not part of the Alloy data plane.
+
+Prometheus groups are published on `send-remote-write` and Loki groups on
+`send-loki-logs`. With gateways, `mimir-alert-rules` and `loki-alert-rules`
+carry them onward separately from gateway routing. A malformed,
+future-version, or structurally invalid outer payload retains the whole
+leader-shared relation LKG. Within a valid v3 payload, a malformed artifact
+retains only its own LKG. Both survive leadership changes. Omission and
+relation removal withdraw state. Non-empty v3 rules require model UUID and
+application ownership fields, and labels come from the original payload
+topology.
+
+Dashboards deliberately bypass Alloy and relate directly from each principal
+to Grafana using the standard dashboard schema.
 
 By default, Alloy preserves the generated Prometheus job name from the scrape relation. A provider
 can optionally publish a per-unit `metrics_job_name` relation key, and Alloy will use that value as

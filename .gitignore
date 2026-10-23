@@ -32,3 +32,4 @@ dist/
 # Misc
 .DS_Store
 .charm_tracing_buffer.raw
+.worktrees/

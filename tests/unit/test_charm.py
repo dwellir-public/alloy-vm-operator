@@ -7,11 +7,115 @@ import json
 import socket
 from dataclasses import replace
 
+import pytest
 from ops import testing
 
-from charm import AlloyCharm
+from charm import RULE_CACHE_KEY, AlloyCharm
 
 DEFAULT_ARGS = "--server.http.listen-addr=0.0.0.0:6987"
+
+
+def _cached_rule_state(*backends: str) -> testing.State:
+    entries = {}
+    for backend in backends:
+        artifact_type = "prometheus_alert_rules" if backend == "prometheus" else "loki_alert_rules"
+        entries[f"{artifact_type}/owned"] = {
+            "backend": backend,
+            "ownership": f"principal-uuid/polkadot/{artifact_type}/owned",
+            "groups": [
+                {
+                    "name": f"{backend}-rules",
+                    "rules": [{"alert": "Down", "expr": "up == 0"}],
+                }
+            ],
+        }
+    return testing.State(
+        leader=True,
+        unit_status=testing.ActiveStatus("configured"),
+        relations=[
+            testing.Relation(
+                "machine-observability",
+                remote_app_name="polkadot",
+                remote_app_data={"payload": "invalid-current"},
+                local_app_data={RULE_CACHE_KEY: AlloyCharm._encode_rule_cache(entries)},
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize("lifecycle", ["config_changed", "start", "update_status"])
+@pytest.mark.parametrize(
+    ("backends", "missing"),
+    [
+        (("prometheus",), "send-remote-write relation"),
+        (("loki",), "send-loki-logs relation"),
+        (
+            ("prometheus", "loki"),
+            "send-remote-write relation and send-loki-logs relation",
+        ),
+    ],
+)
+def test_lifecycle_keeps_cached_rules_waiting_for_destinations(
+    monkeypatch, lifecycle, backends, missing
+):
+    ctx = testing.Context(AlloyCharm)
+    monkeypatch.setattr(
+        AlloyCharm, "_configure", lambda *_args, **_kwargs: testing.ActiveStatus("configured")
+    )
+    monkeypatch.setattr("charm.alloy.start", lambda: None)
+    monkeypatch.setattr("charm.alloy.get_version", lambda: None)
+    monkeypatch.setattr("charm.alloy.is_active", lambda: True)
+    monkeypatch.setattr(AlloyCharm, "_reconcile_config_drift_status", lambda *_args: None)
+    event = getattr(ctx.on, lifecycle)()
+
+    state_out = ctx.run(event, _cached_rule_state(*backends))
+
+    assert state_out.unit_status == testing.WaitingStatus(
+        f"Waiting for {missing} for accepted alert rules"
+    )
+
+
+@pytest.mark.parametrize("lifecycle", ["config_changed", "start", "update_status"])
+def test_lifecycle_reconciles_rules_exactly_once(monkeypatch, lifecycle):
+    ctx = testing.Context(AlloyCharm)
+    calls = []
+    monkeypatch.setattr(
+        AlloyCharm, "_configure", lambda *_args, **_kwargs: testing.ActiveStatus("configured")
+    )
+    monkeypatch.setattr(
+        AlloyCharm,
+        "_reconcile_rule_groups",
+        lambda *_args, **_kwargs: calls.append("rules"),
+    )
+    monkeypatch.setattr("charm.alloy.start", lambda: None)
+    monkeypatch.setattr("charm.alloy.get_version", lambda: None)
+    monkeypatch.setattr("charm.alloy.is_active", lambda: True)
+    monkeypatch.setattr(AlloyCharm, "_reconcile_config_drift_status", lambda *_args: None)
+
+    ctx.run(getattr(ctx.on, lifecycle)(), testing.State(leader=True))
+
+    assert calls == ["rules"]
+
+
+@pytest.mark.parametrize(
+    "preserved_status",
+    [
+        testing.BlockedStatus("config invalid"),
+        testing.BlockedStatus("workload failed"),
+        testing.BlockedStatus("connectivity failed"),
+        testing.WaitingStatus("unrelated upstream waiting"),
+    ],
+)
+def test_rule_reconcile_preserves_non_active_status(monkeypatch, preserved_status):
+    ctx = testing.Context(AlloyCharm)
+    monkeypatch.setattr("charm.alloy.is_active", lambda: True)
+    monkeypatch.setattr("charm.alloy.get_version", lambda: None)
+    monkeypatch.setattr(AlloyCharm, "_reconcile_config_drift_status", lambda *_args: None)
+    state = replace(_cached_rule_state("prometheus"), unit_status=preserved_status)
+
+    state_out = ctx.run(ctx.on.update_status(), state)
+
+    assert state_out.unit_status == preserved_status
 
 
 def test_start(monkeypatch):
@@ -45,7 +149,13 @@ def test_start_clears_legacy_remote_write_metadata(monkeypatch):
     state_out = ctx.run(ctx.on.start(), testing.State(relations=[remote_write], leader=True))
 
     relation_out = state_out.get_relation(remote_write.id)
-    assert relation_out.local_app_data == {}
+    assert relation_out.local_app_data["alert_rules"] == '{"groups":[]}'
+    metadata = json.loads(relation_out.local_app_data["metadata"])
+    assert set(metadata) == {"application", "model", "model_uuid", "unit"}
+    assert metadata["application"] == "alloy-vm"
+    assert metadata["unit"] == "alloy-vm/0"
+    assert metadata["model"] != "legacy-model"
+    assert metadata["model_uuid"] != "legacy-uuid"
 
 
 def test_config_drift_sets_maintenance(monkeypatch, tmp_path):
