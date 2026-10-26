@@ -639,6 +639,38 @@ juju ssh alloy-vm/<unit> 'journalctl -n 20 --no-pager -u snap.lxd.daemon.service
 ```
 
 
+## Built-in host filesystem alerts
+
+`alloy-vm` publishes one Prometheus rule group for the host filesystem metrics
+it collects itself. It sends the group on `send-remote-write` with any
+forwarded principal rules. Every rule matches this application's own
+`juju_model`, `juju_model_uuid` and `juju_application` labels.
+
+| Alert | Condition | For | Severity |
+| --- | --- | --- | --- |
+| `HostDiskSpaceWarning` | More than 80% of the space is used | 30m | warning |
+| `HostDiskSpace` | More than 90% of the space is used | 15m | critical |
+| `HostFilesystemReadOnly` | The filesystem is mounted read-only | 5m | critical |
+| `HostFilesystemDeviceError` | Alloy cannot run statfs on the mount | 15m | warning |
+
+Used space is calculated from `node_filesystem_avail_bytes`, so it includes
+blocks that are reserved for root. The rules ignore pseudo filesystems
+(`tmpfs`, `devtmpfs`, `overlay`, `squashfs`, LXCFS and snapfuse). They also
+ignore `/run`, `/proc`, `/dev`, `/sys` and `/snap` and mounts below them.
+
+`HostFilesystemDeviceError` means the space alerts cannot see that device. It
+does not fire while another mount of the same device stays readable, such as
+the original mount behind an unreadable bind mount. A common cause is a parent
+directory that the `alloy` user cannot read, for example a home directory with
+mode `0700`.
+
+Each alert links its runbook through `runbook_url`: GRA-0019 for disk space,
+GRA-0020 for read-only filesystems and GRA-0021 for device errors.
+
+Forwarded principal rules take priority. If the host group would exceed the
+60 KiB publication limit, the charm skips it, logs a warning and sets the
+status message `Host filesystem alert rules skipped: capacity`.
+
 ## Alert rule transport
 
 Alert rules use the receiver's `alert_rules_encodings` advertisement to negotiate

@@ -12,6 +12,7 @@
 - receive logs over `syslog-receiver`
 - forward logs over `send-loki-logs`
 - validate and forward v3 Prometheus and Loki alert rules
+- publish built-in host filesystem alert rules
 
 `src/charm.py` stays orchestration-focused. Alloy service control and file management stay in
 [`src/alloy.py`](/home/erik/Loki-project/alloy-vm-operator/src/alloy.py), and Alloy config
@@ -58,6 +59,12 @@ retains only its own LKG. Both survive leadership changes. Omission and
 relation removal withdraw state. Non-empty v3 rules require model UUID and
 application ownership fields, and labels come from the original payload
 topology.
+
+The charm also publishes its own host filesystem rule group on
+`send-remote-write`, built in `src/host_alert_rules.py` and scoped to the
+`alloy-vm` application topology. Principal rules are admitted first. The host
+group is added only if it still fits the publication size limit; otherwise
+the charm skips it and reports `Host filesystem alert rules skipped: capacity`.
 
 Dashboards deliberately bypass Alloy and relate directly from each principal
 to Grafana using the standard dashboard schema.

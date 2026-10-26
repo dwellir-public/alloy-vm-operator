@@ -47,6 +47,7 @@ from config_builder import (
     ScrapeTarget,
 )
 from grafanacloud_connectivity import probe_endpoint
+from host_alert_rules import host_filesystem_rule_groups
 from machine_observability_sources import (
     MachineObservabilitySource,
     translate_machine_observability_payload,
@@ -401,9 +402,35 @@ class AlloyCharm(ops.CharmBase):
                 relation_state = candidate
 
         prometheus_groups, loki_groups = self._flatten_rule_state(relation_state)
-        publish_rule_groups(self, "send-remote-write", prometheus_groups)
+        host_groups = self._host_rule_groups(prometheus_groups)
+        publish_rule_groups(self, "send-remote-write", [*(host_groups or []), *prometheus_groups])
         publish_rule_groups(self, "send-loki-logs", loki_groups)
         self._set_rule_destination_status(prometheus_groups, loki_groups)
+        if host_groups is None and isinstance(self.unit.status, ops.ActiveStatus):
+            self.unit.status = ops.ActiveStatus("Host filesystem alert rules skipped: capacity")
+
+    def _host_rule_groups(
+        self, principal_groups: list[dict[str, object]]
+    ) -> list[dict[str, object]] | None:
+        """Return host filesystem groups, or None if they do not fit beside principal rules.
+
+        Principal rules are admitted first, so host rules never displace them.
+        """
+        host_groups = host_filesystem_rule_groups(
+            model=self.model.name,
+            model_uuid=self.model.uuid,
+            application=self.app.name,
+            charm_name=self.meta.name,
+        )
+        groups = [*host_groups, *principal_groups]
+        names = [group["name"] for group in groups]
+        payload = json.dumps({"groups": groups}, sort_keys=True, separators=(",", ":"))
+        if len(names) == len(set(names)) and (
+            len(payload.encode("utf-8")) <= RULE_PUBLICATION_VALUE_LIMIT
+        ):
+            return host_groups
+        logger.warning("Host filesystem alert rules skipped: publish-size or name conflict")
+        return None
 
     def _set_rule_destination_status(
         self,
