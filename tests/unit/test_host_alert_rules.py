@@ -40,6 +40,12 @@ def test_host_filesystem_rules_are_valid_and_scoped_to_own_application():
             assert rule["labels"][key] == value
         assert rule["labels"]["juju_charm"] == "alloy-vm"
         assert rule["labels"]["severity"] in {"warning", "critical"}
+        gra_id = re.match(r"\[(GRA-\d{4})\] ", rule["annotations"]["summary"])
+        assert gra_id is not None
+        slug = gra_id.group(1).lower().replace("-", "_")
+        assert rule["annotations"]["runbook_url"].startswith(
+            f"https://docs.internal.dwellir.com/docs/operations/grafana_alert_runbooks/{slug}_"
+        )
 
 
 def _promql_regex(expr: str, label: str) -> str:
@@ -62,7 +68,7 @@ def _promql_regex(expr: str, label: str) -> str:
         ("/sys/fs/cgroup", True),
         ("/dev/shm", True),
         ("/snap/core22/1234", True),
-        ("/var/snap/lxd/common/ns", True),
+        ("/var/snap/lxd/common/lxd", False),
     ],
 )
 def test_mountpoint_exclusions_respect_directory_boundaries(mountpoint, excluded):

@@ -656,10 +656,16 @@ forwarded principal rules. Every rule matches this application's own
 Used space is calculated from `node_filesystem_avail_bytes`, so it includes
 blocks that are reserved for root. The rules ignore pseudo filesystems
 (`tmpfs`, `devtmpfs`, `overlay`, `squashfs`, LXCFS and snapfuse). They also
-ignore mounts under `/run`, `/proc`, `/dev`, `/sys`, `/snap` and `/var/snap`.
+ignore `/run`, `/proc`, `/dev`, `/sys` and `/snap` and mounts below them.
 
-`HostFilesystemDeviceError` means the space alerts cannot see that mount. A
-common cause is a mount point that the Alloy user cannot read.
+`HostFilesystemDeviceError` means the space alerts cannot see that device. It
+does not fire while another mount of the same device stays readable, such as
+the original mount behind an unreadable bind mount. A common cause is a parent
+directory that the `alloy` user cannot read, for example a home directory with
+mode `0700`.
+
+Each alert links its runbook through `runbook_url`: GRA-0019 for disk space,
+GRA-0020 for read-only filesystems and GRA-0021 for device errors.
 
 Forwarded principal rules take priority. If the host group would exceed the
 60 KiB publication limit, the charm skips it, logs a warning and sets the
