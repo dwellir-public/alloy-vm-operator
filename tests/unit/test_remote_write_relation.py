@@ -10,7 +10,7 @@ MODEL_NAME = "tenant-routing"
 MODEL_UUID = "00000000-0000-4000-8000-000000000111"
 
 
-def test_send_remote_write_relation_publishes_empty_rules_and_standard_metadata():
+def test_send_remote_write_relation_publishes_host_rules_and_standard_metadata():
     with (
         patch("charm.alloy.ensure_config_dir_permissions"),
         patch("charm.alloy.verify_config"),
@@ -34,7 +34,14 @@ def test_send_remote_write_relation_publishes_empty_rules_and_standard_metadata(
 
         relation_data = harness.get_relation_data(relation_id, harness.charm.app.name)
 
-    assert json.loads(relation_data["alert_rules"]) == {"groups": []}
+    groups = json.loads(relation_data["alert_rules"])["groups"]
+    assert [group["name"] for group in groups] == [f"{MODEL_UUID}-alloy-vm-host-filesystem"]
+    assert {rule["alert"] for rule in groups[0]["rules"]} == {
+        "HostDiskSpaceWarning",
+        "HostDiskSpace",
+        "HostFilesystemReadOnly",
+        "HostFilesystemDeviceError",
+    }
     assert json.loads(relation_data["metadata"]) == {
         "application": harness.charm.app.name,
         "model": MODEL_NAME,

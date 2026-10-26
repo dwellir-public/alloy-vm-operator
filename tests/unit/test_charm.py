@@ -149,7 +149,10 @@ def test_start_clears_legacy_remote_write_metadata(monkeypatch):
     state_out = ctx.run(ctx.on.start(), testing.State(relations=[remote_write], leader=True))
 
     relation_out = state_out.get_relation(remote_write.id)
-    assert relation_out.local_app_data["alert_rules"] == '{"groups":[]}'
+    groups = json.loads(relation_out.local_app_data["alert_rules"])["groups"]
+    assert [group["name"] for group in groups] == [
+        f"{state_out.model.uuid}-alloy-vm-host-filesystem"
+    ]
     metadata = json.loads(relation_out.local_app_data["metadata"])
     assert set(metadata) == {"application", "model", "model_uuid", "unit"}
     assert metadata["application"] == "alloy-vm"

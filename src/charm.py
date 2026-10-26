@@ -47,6 +47,7 @@ from config_builder import (
     ScrapeTarget,
 )
 from grafanacloud_connectivity import probe_endpoint
+from host_alert_rules import host_filesystem_rule_groups
 from machine_observability_sources import (
     MachineObservabilitySource,
     translate_machine_observability_payload,
@@ -391,7 +392,7 @@ class AlloyCharm(ops.CharmBase):
                 fallback=previous_states[relation_id],
             )
             candidate = self._normalize_ownership_state({**relation_state, relation_id: desired})
-            if not self._rule_state_is_publishable(candidate):
+            if not self._rule_state_is_publishable(candidate, self._host_rule_groups()):
                 logger.warning(
                     "Machine-observability rules on relation %s rejected: publish-size",
                     relation_id,
@@ -401,9 +402,19 @@ class AlloyCharm(ops.CharmBase):
                 relation_state = candidate
 
         prometheus_groups, loki_groups = self._flatten_rule_state(relation_state)
+        prometheus_groups = [*self._host_rule_groups(), *prometheus_groups]
         publish_rule_groups(self, "send-remote-write", prometheus_groups)
         publish_rule_groups(self, "send-loki-logs", loki_groups)
         self._set_rule_destination_status(prometheus_groups, loki_groups)
+
+    def _host_rule_groups(self) -> list[dict[str, object]]:
+        """Return the alert groups for host metrics this Alloy unit collects itself."""
+        return host_filesystem_rule_groups(
+            model=self.model.name,
+            model_uuid=self.model.uuid,
+            application=self.app.name,
+            charm_name=self.meta.name,
+        )
 
     def _set_rule_destination_status(
         self,
@@ -412,7 +423,11 @@ class AlloyCharm(ops.CharmBase):
     ) -> None:
         """Report accepted rule state waiting for its standard backend relation."""
         missing: list[str] = []
-        if prometheus_groups and not self.model.relations.get("send-remote-write", []):
+        host_group_names = {group["name"] for group in self._host_rule_groups()}
+        principal_prometheus_groups = [
+            group for group in prometheus_groups if group["name"] not in host_group_names
+        ]
+        if principal_prometheus_groups and not self.model.relations.get("send-remote-write", []):
             missing.append("send-remote-write relation")
         if loki_groups and not self.model.relations.get("send-loki-logs", []):
             missing.append("send-loki-logs relation")
@@ -449,7 +464,7 @@ class AlloyCharm(ops.CharmBase):
         for relation_id, state in sorted(previous_states.items()):
             state = self._without_ownership_conflicts(state, admitted, relation_id=relation_id)
             candidate = {**admitted, relation_id: state}
-            if self._rule_state_is_publishable(candidate):
+            if self._rule_state_is_publishable(candidate, self._host_rule_groups()):
                 admitted = candidate
             else:
                 logger.warning(
@@ -531,13 +546,20 @@ class AlloyCharm(ops.CharmBase):
         return prometheus_groups, loki_groups
 
     @staticmethod
-    def _rule_state_is_publishable(relation_state: dict[int, RuleCacheState]) -> bool:
+    def _rule_state_is_publishable(
+        relation_state: dict[int, RuleCacheState],
+        host_prometheus_groups: list[dict[str, object]] | None = None,
+    ) -> bool:
         """Check the exact compact downstream values against a conservative Juju ceiling."""
         try:
-            flattened = AlloyCharm._flatten_rule_state(relation_state)
+            prometheus_groups, loki_groups = AlloyCharm._flatten_rule_state(relation_state)
         except (KeyError, TypeError, ValueError):
             return False
-        for groups in flattened:
+        prometheus_groups = [*(host_prometheus_groups or []), *prometheus_groups]
+        names = [group["name"] for group in prometheus_groups]
+        if len(names) != len(set(names)):
+            return False
+        for groups in (prometheus_groups, loki_groups):
             payload = json.dumps({"groups": groups}, sort_keys=True, separators=(",", ":"))
             if len(payload.encode("utf-8")) > RULE_PUBLICATION_VALUE_LIMIT:
                 return False

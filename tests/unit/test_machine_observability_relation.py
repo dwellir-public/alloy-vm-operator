@@ -25,6 +25,12 @@ from charm import AlloyCharm, PayloadDecodeError, parse_machine_observability_pa
 
 
 @pytest.fixture(autouse=True)
+def _without_host_rules(monkeypatch):
+    """Keep these principal-forwarding tests independent of Alloy's own host rules."""
+    monkeypatch.setattr("charm.host_filesystem_rule_groups", lambda **_: [])
+
+
+@pytest.fixture(autouse=True)
 def _accept_backend_rules(monkeypatch):
     monkeypatch.setattr(AlloyCharm, "_validate_artifact_rules", lambda *_args, **_kwargs: True)
 
