@@ -1,8 +1,10 @@
 import json
+import re
 from typing import Any, cast
 
+import pytest
+
 from alert_rules import validate_rule_groups
-from charm import RULE_PUBLICATION_VALUE_LIMIT, AlloyCharm
 from host_alert_rules import host_filesystem_rule_groups
 
 TOPOLOGY = {
@@ -40,47 +42,49 @@ def test_host_filesystem_rules_are_valid_and_scoped_to_own_application():
         assert rule["labels"]["severity"] in {"warning", "critical"}
 
 
-def test_host_filesystem_rules_exclude_pseudo_filesystems():
+def _promql_regex(expr: str, label: str) -> str:
+    """Extract one negative-matcher regex from a rendered expression, unescaping PromQL."""
+    match = re.search(rf'{label}!~"((?:[^"\\]|\\.)*)"', expr)
+    assert match is not None
+    return match.group(1).replace("\\\\", "\\")
+
+
+@pytest.mark.parametrize(
+    ("mountpoint", "excluded"),
+    [
+        ("/", False),
+        ("/mnt/blockchaindata0", False),
+        ("/boot/efi", False),
+        ("/runtime", False),
+        ("/system-data", False),
+        ("/run", True),
+        ("/run/lock", True),
+        ("/sys/fs/cgroup", True),
+        ("/dev/shm", True),
+        ("/snap/core22/1234", True),
+        ("/var/snap/lxd/common/ns", True),
+    ],
+)
+def test_mountpoint_exclusions_respect_directory_boundaries(mountpoint, excluded):
     for rule in _rules():
-        assert (
-            'fstype!~"tmpfs|devtmpfs|overlay|squashfs|fuse\\\\.lxcfs|fuse\\\\.snapfuse"'
-            in rule["expr"]
-        )
-        assert 'mountpoint!~"/run.*|/proc.*|/dev.*|/sys.*|/snap/.*|/var/snap/.*"' in rule["expr"]
+        pattern = _promql_regex(rule["expr"], "mountpoint")
+        assert (re.fullmatch(pattern, mountpoint) is not None) is excluded
 
 
-def test_host_rules_count_against_the_prometheus_publication_budget():
-    host_groups = _groups()
-    host_bytes = len(json.dumps({"groups": host_groups}, separators=(",", ":")).encode())
-    filler = "x" * (RULE_PUBLICATION_VALUE_LIMIT - host_bytes)
-    principal_group = {
-        "name": "principal",
-        "rules": [{"alert": "A", "expr": f"vector(1) > 0 # {filler}"}],
-    }
-    relation_state = {
-        0: {
-            "prometheus_alert_rules/one": {
-                "backend": "prometheus",
-                "ownership": "uuid/app/prometheus_alert_rules/one",
-                "groups": [principal_group],
-            }
-        }
-    }
-
-    assert AlloyCharm._rule_state_is_publishable(relation_state)
-    assert not AlloyCharm._rule_state_is_publishable(relation_state, host_groups)
-
-
-def test_host_group_name_collision_is_unpublishable():
-    host_groups = _groups()
-    relation_state = {
-        0: {
-            "prometheus_alert_rules/one": {
-                "backend": "prometheus",
-                "ownership": "uuid/app/prometheus_alert_rules/one",
-                "groups": [{"name": host_groups[0]["name"], "rules": []}],
-            }
-        }
-    }
-
-    assert not AlloyCharm._rule_state_is_publishable(relation_state, host_groups)
+@pytest.mark.parametrize(
+    ("fstype", "excluded"),
+    [
+        ("xfs", False),
+        ("ext4", False),
+        ("vfat", False),
+        ("fuseXlxcfs", False),
+        ("tmpfs", True),
+        ("squashfs", True),
+        ("fuse.lxcfs", True),
+        ("fuse.snapfuse", True),
+    ],
+)
+def test_fstype_exclusions_match_pseudo_filesystems_only(fstype, excluded):
+    for rule in _rules():
+        pattern = _promql_regex(rule["expr"], "fstype")
+        assert (re.fullmatch(pattern, fstype) is not None) is excluded

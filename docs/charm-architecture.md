@@ -62,8 +62,9 @@ topology.
 
 The charm also publishes its own host filesystem rule group on
 `send-remote-write`, built in `src/host_alert_rules.py` and scoped to the
-`alloy-vm` application topology. This group counts against the same
-publication size limit as forwarded principal rules.
+`alloy-vm` application topology. Principal rules are admitted first. The host
+group is added only if it still fits the publication size limit; otherwise
+the charm skips it and reports `Host filesystem alert rules skipped: capacity`.
 
 Dashboards deliberately bypass Alloy and relate directly from each principal
 to Grafana using the standard dashboard schema.

@@ -661,6 +661,10 @@ ignore mounts under `/run`, `/proc`, `/dev`, `/sys`, `/snap` and `/var/snap`.
 `HostFilesystemDeviceError` means the space alerts cannot see that mount. A
 common cause is a mount point that the Alloy user cannot read.
 
+Forwarded principal rules take priority. If the host group would exceed the
+60 KiB publication limit, the charm skips it, logs a warning and sets the
+status message `Host filesystem alert rules skipped: capacity`.
+
 ## Alert rule transport
 
 Alert rules use the receiver's `alert_rules_encodings` advertisement to negotiate

@@ -1993,3 +1993,56 @@ def test_invalid_artifact_identity_does_not_inject_log_content(monkeypatch, capl
     assert "UNIQUE-SECRET" not in caplog.text
     assert "forged-log-line" not in caplog.text
     assert "unknown/unknown: schema" in caplog.text
+
+
+def test_upgrade_keeps_principal_rules_when_host_rules_do_not_fit(monkeypatch, caplog):
+    import charm as charm_module
+    import host_alert_rules
+
+    monkeypatch.setattr(
+        "charm.host_filesystem_rule_groups", host_alert_rules.host_filesystem_rule_groups
+    )
+    monkeypatch.setattr(
+        charm_module.AlloyCharm, "_configure", lambda *args, **kwargs: ops.ActiveStatus()
+    )
+    harness = testing.Harness(AlloyCharm)
+    harness.set_leader(True)
+    harness.begin()
+    machine = harness.add_relation("machine-observability", "polkadot")
+    prometheus = harness.add_relation("send-remote-write", "mimir")
+    loki = harness.add_relation("send-loki-logs", "loki")
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(
+                    _rule_artifact("prometheus_alert_rules", "metrics", "METRICS"),
+                    _rule_artifact("loki_alert_rules", "logs", "LOGS"),
+                )
+            )
+        },
+    )
+    published = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    host_names = [group["name"] for group in published if "host-filesystem" in group["name"]]
+    assert len(host_names) == 1
+    principal = [group for group in published if group["name"] not in host_names]
+    loki_before = harness.get_relation_data(loki, harness.charm.app.name)["alert_rules"]
+    principal_bytes = len(
+        json.dumps({"groups": principal}, sort_keys=True, separators=(",", ":")).encode()
+    )
+    monkeypatch.setattr(charm_module, "RULE_PUBLICATION_VALUE_LIMIT", principal_bytes + 50)
+
+    harness.charm.on.upgrade_charm.emit()
+
+    after = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert after == principal
+    assert harness.get_relation_data(loki, harness.charm.app.name)["alert_rules"] == loki_before
+    assert "Host filesystem alert rules skipped" in caplog.text
+    assert harness.charm.unit.status == ops.ActiveStatus(
+        "Host filesystem alert rules skipped: capacity"
+    )
