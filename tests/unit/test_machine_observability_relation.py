@@ -21,7 +21,14 @@ from charms.dwellir_observability.v0.machine_observability import (
     encode_artifact,
 )
 
-from charm import AlloyCharm, PayloadDecodeError, parse_machine_observability_payload_json
+from charm import (
+    RULE_CACHE_KEY,
+    RULE_PUBLICATION_VALUE_LIMIT,
+    AlloyCharm,
+    PayloadDecodeError,
+    parse_machine_observability_payload_json,
+)
+from host_alert_rules import build_host_alert_rule_groups
 
 
 @pytest.fixture(autouse=True)
@@ -1993,3 +2000,105 @@ def test_invalid_artifact_identity_does_not_inject_log_content(monkeypatch, capl
     assert "UNIQUE-SECRET" not in caplog.text
     assert "forged-log-line" not in caplog.text
     assert "unknown/unknown: schema" in caplog.text
+
+
+def _host_only_groups(harness):
+    return build_host_alert_rule_groups(
+        model_uuid=harness.model.uuid, application=harness.charm.app.name
+    )
+
+
+def test_host_alert_group_is_appended_after_principal_groups(monkeypatch):
+    monkeypatch.setattr(AlloyCharm, "_host_alarms_enabled", lambda _self: True)
+    monkeypatch.setattr(
+        AlloyCharm, "_configure", lambda *_args, **_kwargs: ops.ActiveStatus("configured")
+    )
+    harness = testing.Harness(AlloyCharm)
+    harness.set_leader(True)
+    harness.begin()
+    machine = harness.add_relation("machine-observability", "polkadot")
+    prometheus = harness.add_relation("send-remote-write", "mimir")
+    loki = harness.add_relation("send-loki-logs", "loki")
+    harness.update_relation_data(
+        machine,
+        "polkadot",
+        {
+            "payload": json.dumps(
+                _v3_payload(_rule_artifact("prometheus_alert_rules", "metrics", "Metrics"))
+            )
+        },
+    )
+
+    harness.update_config({"log-level": "debug"})
+
+    published = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert len(published) == 2
+    assert published[-1] == _host_only_groups(harness)[0]
+    assert json.loads(harness.get_relation_data(loki, harness.charm.app.name)["alert_rules"]) == {
+        "groups": []
+    }
+
+
+def test_host_alert_groups_count_toward_publication_size():
+    host_groups = build_host_alert_rule_groups(model_uuid="uuid", application="app")
+
+    def _state(expr):
+        return {
+            0: {
+                "prometheus_alert_rules/one": {
+                    "backend": "prometheus",
+                    "ownership": "uuid/app/prometheus_alert_rules/one",
+                    "groups": [{"name": "one", "rules": [{"alert": "Down", "expr": expr}]}],
+                }
+            }
+        }
+
+    def _payload_bytes(state):
+        groups, _ = AlloyCharm._flatten_rule_state(state)
+        payload = json.dumps({"groups": groups}, sort_keys=True, separators=(",", ":"))
+        return len(payload.encode("utf-8"))
+
+    state = _state("x" * (RULE_PUBLICATION_VALUE_LIMIT - _payload_bytes(_state(""))))
+    assert _payload_bytes(state) == RULE_PUBLICATION_VALUE_LIMIT
+
+    assert AlloyCharm._rule_state_is_publishable(state)
+    assert not AlloyCharm._rule_state_is_publishable(state, host_groups)
+
+
+def test_cached_principal_state_at_the_ceiling_is_skipped_when_host_alarms_are_on(monkeypatch):
+    """A near-limit LKG plus the host group must be rejected, not raise in publish."""
+    monkeypatch.setattr(AlloyCharm, "_host_alarms_enabled", lambda _self: True)
+    monkeypatch.setattr(
+        AlloyCharm, "_configure", lambda *_args, **_kwargs: ops.ActiveStatus("configured")
+    )
+    harness = testing.Harness(AlloyCharm)
+    harness.set_leader(True)
+    harness.begin()
+    prometheus = harness.add_relation("send-remote-write", "mimir")
+    machine = harness.add_relation("machine-observability", "polkadot")
+    entry: dict[str, Any] = {
+        "backend": "prometheus",
+        "ownership": "principal-uuid/polkadot/prometheus_alert_rules/big",
+        "groups": [{"name": "big", "rules": [{"alert": "Down", "expr": "up"}]}],
+    }
+    filler = RULE_PUBLICATION_VALUE_LIMIT - len(
+        json.dumps({"groups": entry["groups"]}, sort_keys=True, separators=(",", ":"))
+    )
+    entry["groups"][0]["rules"][0]["expr"] = "up" + "x" * filler
+    harness.update_relation_data(
+        machine,
+        harness.charm.app.name,
+        {RULE_CACHE_KEY: AlloyCharm._encode_rule_cache({"prometheus_alert_rules/big": entry})},
+    )
+    harness.update_relation_data(machine, "polkadot", {"payload": "invalid-current"})
+
+    harness.update_config({"log-level": "debug"})
+
+    published = json.loads(
+        harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
+    )["groups"]
+    assert [group["name"] for group in published] == [
+        f"{harness.model.uuid}-{harness.charm.app.name}-host-metrics"
+    ]

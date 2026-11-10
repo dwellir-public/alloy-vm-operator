@@ -12,7 +12,7 @@ import socket
 import subprocess
 import tempfile
 import zlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypeAlias, cast
 
@@ -377,7 +377,7 @@ class AlloyCharm(ops.CharmBase):
             relation_id: self._load_relation_rule_cache(relation)
             for relation_id, relation in sorted(relations.items())
         }
-        relation_state = self._bounded_existing_rule_state(previous_states)
+        relation_state = self._bounded_existing_rule_state(previous_states, host_groups)
         for relation_id, relation in sorted(relations.items()):
             desired = self._desired_relation_rule_state(relation, previous_states[relation_id])
             if desired is None:
@@ -393,7 +393,7 @@ class AlloyCharm(ops.CharmBase):
                 fallback=previous_states[relation_id],
             )
             candidate = self._normalize_ownership_state({**relation_state, relation_id: desired})
-            if not self._rule_state_is_publishable(candidate):
+            if not self._rule_state_is_publishable(candidate, host_groups):
                 logger.warning(
                     "Machine-observability rules on relation %s rejected: publish-size",
                     relation_id,
@@ -447,13 +447,14 @@ class AlloyCharm(ops.CharmBase):
     def _bounded_existing_rule_state(
         self,
         previous_states: dict[int, RuleCacheState],
+        extra_prometheus_groups: Sequence[dict[str, object]] = (),
     ) -> dict[int, RuleCacheState]:
         """Admit cached relation states deterministically without exceeding publication limits."""
         admitted: dict[int, RuleCacheState] = {}
         for relation_id, state in sorted(previous_states.items()):
             state = self._without_ownership_conflicts(state, admitted, relation_id=relation_id)
             candidate = {**admitted, relation_id: state}
-            if self._rule_state_is_publishable(candidate):
+            if self._rule_state_is_publishable(candidate, extra_prometheus_groups):
                 admitted = candidate
             else:
                 logger.warning(
@@ -535,13 +536,16 @@ class AlloyCharm(ops.CharmBase):
         return prometheus_groups, loki_groups
 
     @staticmethod
-    def _rule_state_is_publishable(relation_state: dict[int, RuleCacheState]) -> bool:
+    def _rule_state_is_publishable(
+        relation_state: dict[int, RuleCacheState],
+        extra_prometheus_groups: Sequence[dict[str, object]] = (),
+    ) -> bool:
         """Check the exact compact downstream values against a conservative Juju ceiling."""
         try:
-            flattened = AlloyCharm._flatten_rule_state(relation_state)
+            prometheus_groups, loki_groups = AlloyCharm._flatten_rule_state(relation_state)
         except (KeyError, TypeError, ValueError):
             return False
-        for groups in flattened:
+        for groups in ([*prometheus_groups, *extra_prometheus_groups], loki_groups):
             payload = json.dumps({"groups": groups}, sort_keys=True, separators=(",", ":"))
             if len(payload.encode("utf-8")) > RULE_PUBLICATION_VALUE_LIMIT:
                 return False
