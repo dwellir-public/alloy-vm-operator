@@ -305,8 +305,9 @@ principal rules forwarded from `machine-observability`:
 - Rules travel only on `send-remote-write`; Grafana Cloud forwarding via
   `grafana-cloud-config` carries metrics but not alert rules. The alarms never
   change unit status when `send-remote-write` is absent.
-- The group counts toward the 60 KiB rule publication ceiling shared with
-  forwarded principal rules.
+- Forwarded principal rules take precedence under the 60 KiB rule publication
+  ceiling: if adding the host group would exceed it, the leader publishes the
+  principal rules alone and logs `Host alarms skipped: publish-size`.
 
 Withdraw the group with:
 

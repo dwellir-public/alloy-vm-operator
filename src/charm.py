@@ -377,7 +377,7 @@ class AlloyCharm(ops.CharmBase):
             relation_id: self._load_relation_rule_cache(relation)
             for relation_id, relation in sorted(relations.items())
         }
-        relation_state = self._bounded_existing_rule_state(previous_states, host_groups)
+        relation_state = self._bounded_existing_rule_state(previous_states)
         for relation_id, relation in sorted(relations.items()):
             desired = self._desired_relation_rule_state(relation, previous_states[relation_id])
             if desired is None:
@@ -393,7 +393,7 @@ class AlloyCharm(ops.CharmBase):
                 fallback=previous_states[relation_id],
             )
             candidate = self._normalize_ownership_state({**relation_state, relation_id: desired})
-            if not self._rule_state_is_publishable(candidate, host_groups):
+            if not self._rule_state_is_publishable(candidate):
                 logger.warning(
                     "Machine-observability rules on relation %s rejected: publish-size",
                     relation_id,
@@ -403,6 +403,11 @@ class AlloyCharm(ops.CharmBase):
                 relation_state = candidate
 
         prometheus_groups, loki_groups = self._flatten_rule_state(relation_state)
+        # Principal rules are admitted without the host group so an optional
+        # built-in convenience never displaces an application's own alerts.
+        if host_groups and not self._rule_state_is_publishable(relation_state, host_groups):
+            logger.warning("Host alarms skipped: publish-size")
+            host_groups = []
         publish_rule_groups(self, "send-remote-write", [*prometheus_groups, *host_groups])
         publish_rule_groups(self, "send-loki-logs", loki_groups)
         # Host alarms only ever travel on send-remote-write; host metrics may
@@ -447,14 +452,13 @@ class AlloyCharm(ops.CharmBase):
     def _bounded_existing_rule_state(
         self,
         previous_states: dict[int, RuleCacheState],
-        extra_prometheus_groups: Sequence[dict[str, object]] = (),
     ) -> dict[int, RuleCacheState]:
         """Admit cached relation states deterministically without exceeding publication limits."""
         admitted: dict[int, RuleCacheState] = {}
         for relation_id, state in sorted(previous_states.items()):
             state = self._without_ownership_conflicts(state, admitted, relation_id=relation_id)
             candidate = {**admitted, relation_id: state}
-            if self._rule_state_is_publishable(candidate, extra_prometheus_groups):
+            if self._rule_state_is_publishable(candidate):
                 admitted = candidate
             else:
                 logger.warning(
@@ -547,7 +551,8 @@ class AlloyCharm(ops.CharmBase):
             return False
         for groups in ([*prometheus_groups, *extra_prometheus_groups], loki_groups):
             payload = json.dumps({"groups": groups}, sort_keys=True, separators=(",", ":"))
-            if len(payload.encode("utf-8")) > RULE_PUBLICATION_VALUE_LIMIT:
+            # publish_rule_groups refuses plain JSON at the ceiling itself.
+            if len(payload.encode("utf-8")) >= RULE_PUBLICATION_VALUE_LIMIT:
                 return False
         return True
 

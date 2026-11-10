@@ -2060,15 +2060,33 @@ def test_host_alert_groups_count_toward_publication_size():
         payload = json.dumps({"groups": groups}, sort_keys=True, separators=(",", ":"))
         return len(payload.encode("utf-8"))
 
-    state = _state("x" * (RULE_PUBLICATION_VALUE_LIMIT - _payload_bytes(_state(""))))
-    assert _payload_bytes(state) == RULE_PUBLICATION_VALUE_LIMIT
+    state = _state("x" * (RULE_PUBLICATION_VALUE_LIMIT - 1 - _payload_bytes(_state(""))))
+    assert _payload_bytes(state) == RULE_PUBLICATION_VALUE_LIMIT - 1
 
     assert AlloyCharm._rule_state_is_publishable(state)
     assert not AlloyCharm._rule_state_is_publishable(state, host_groups)
 
 
-def test_cached_principal_state_at_the_ceiling_is_skipped_when_host_alarms_are_on(monkeypatch):
-    """A near-limit LKG plus the host group must be rejected, not raise in publish."""
+def test_payload_at_the_exact_ceiling_is_not_publishable():
+    """publish_rule_groups raises at 60 KiB, so the guard must reject the exact ceiling too."""
+    group = {"name": "one", "rules": [{"alert": "Down", "expr": "up"}]}
+    base = len(json.dumps({"groups": [group]}, sort_keys=True, separators=(",", ":")))
+    group["rules"][0]["expr"] = "up" + "x" * (RULE_PUBLICATION_VALUE_LIMIT - base)
+    state = {
+        0: {
+            "prometheus_alert_rules/one": {
+                "backend": "prometheus",
+                "ownership": "uuid/app/prometheus_alert_rules/one",
+                "groups": [group],
+            }
+        }
+    }
+
+    assert not AlloyCharm._rule_state_is_publishable(state)
+
+
+def test_host_alarms_yield_to_principal_rules_near_the_ceiling(monkeypatch, caplog):
+    """A near-limit principal LKG keeps publishing; the host group is skipped and logged."""
     monkeypatch.setattr(AlloyCharm, "_host_alarms_enabled", lambda _self: True)
     monkeypatch.setattr(
         AlloyCharm, "_configure", lambda *_args, **_kwargs: ops.ActiveStatus("configured")
@@ -2083,22 +2101,22 @@ def test_cached_principal_state_at_the_ceiling_is_skipped_when_host_alarms_are_o
         "ownership": "principal-uuid/polkadot/prometheus_alert_rules/big",
         "groups": [{"name": "big", "rules": [{"alert": "Down", "expr": "up"}]}],
     }
-    filler = RULE_PUBLICATION_VALUE_LIMIT - len(
-        json.dumps({"groups": entry["groups"]}, sort_keys=True, separators=(",", ":"))
+    filler = (
+        RULE_PUBLICATION_VALUE_LIMIT
+        - 1
+        - len(json.dumps({"groups": entry["groups"]}, sort_keys=True, separators=(",", ":")))
     )
     entry["groups"][0]["rules"][0]["expr"] = "up" + "x" * filler
-    harness.update_relation_data(
-        machine,
-        harness.charm.app.name,
-        {RULE_CACHE_KEY: AlloyCharm._encode_rule_cache({"prometheus_alert_rules/big": entry})},
-    )
+    cache = AlloyCharm._encode_rule_cache({"prometheus_alert_rules/big": entry})
+    harness.update_relation_data(machine, harness.charm.app.name, {RULE_CACHE_KEY: cache})
     harness.update_relation_data(machine, "polkadot", {"payload": "invalid-current"})
+    caplog.clear()
 
     harness.update_config({"log-level": "debug"})
 
     published = json.loads(
         harness.get_relation_data(prometheus, harness.charm.app.name)["alert_rules"]
     )["groups"]
-    assert [group["name"] for group in published] == [
-        f"{harness.model.uuid}-{harness.charm.app.name}-host-metrics"
-    ]
+    assert [group["name"] for group in published] == ["big"]
+    assert "Host alarms skipped: publish-size" in caplog.text
+    assert harness.get_relation_data(machine, harness.charm.app.name)[RULE_CACHE_KEY] == cache
