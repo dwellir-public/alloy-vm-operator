@@ -21,6 +21,13 @@ DEFAULT_PACKAGE_CONFIG_BACKUP_PATH = os.path.join(
 DEFAULT_CONFIG_BACKUP_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.alloy.bak")
 REMOTE_WRITE_COMPONENT_NAME = "metrics"
 REMOTE_WRITE_MAX_KEEPALIVE = "30m"
+# Alloy's shared exporter framework puts job="integrations/<exporter>" on every
+# target it emits (internal/component/prometheus/exporter/exporter.go), and
+# prometheus.scrape only applies job_name to targets that have no job label.
+# The host-metric series therefore carry this value, not the "alloy-local"
+# job_name of prometheus.scrape "default", and anything selecting them has to
+# match it.
+HOST_METRICS_JOB_LABEL = "integrations/unix"
 DEFAULT_SYSLOG_ACCESS_DROP_EXPRESSIONS = [
     '.*"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE) .* HTTP/.*"',
 ]
