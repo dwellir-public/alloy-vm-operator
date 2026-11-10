@@ -13,7 +13,12 @@ MODEL_UUID = "00000000-0000-4000-8000-000000000111"
 BASE_MATCHER = (
     f'job="integrations/unix",juju_model_uuid="{MODEL_UUID}",juju_application="alloy-vm"'
 )
-DISK_MATCHER = f'{BASE_MATCHER},fstype!~"tmpfs|devtmpfs|overlay|squashfs|iso9660|ramfs"'
+# Snap mounts appear as squashfs on hosts but as fuse.snapfuse inside LXD containers,
+# so they are also dropped by mountpoint; they are always 100% full.
+DISK_MATCHER = (
+    f'{BASE_MATCHER},fstype!~"tmpfs|devtmpfs|overlay|squashfs|iso9660|ramfs",'
+    'mountpoint!~"/snap/.*"'
+)
 
 
 def _rules() -> list[dict[str, Any]]:

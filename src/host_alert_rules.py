@@ -13,6 +13,9 @@ HOST_ALERT_FOR = "5m"
 # node_exporter already drops most pseudo filesystems; tmpfs mounts such as
 # /run survive its defaults and squashfs snaps are always 100% full.
 HOST_DISK_FSTYPE_EXCLUDE = "tmpfs|devtmpfs|overlay|squashfs|iso9660|ramfs"
+# Snap mounts are squashfs on hosts but fuse.snapfuse inside LXD containers, so
+# the fstype filter misses them there; they are always 100% full either way.
+HOST_DISK_MOUNTPOINT_EXCLUDE = "/snap/.*"
 
 _DISK_DESCRIPTION = (
     '{{ $labels.mountpoint }} on {{ $labels.juju_unit }} is {{ $value | printf "%.1f" }}% full.'
@@ -57,7 +60,10 @@ def build_host_alert_rule_groups(*, model_uuid: str, application: str) -> list[d
         f"juju_model_uuid={json.dumps(model_uuid)},"
         f"juju_application={json.dumps(application)}"
     )
-    disk_matcher = f"{base_matcher},fstype!~{json.dumps(HOST_DISK_FSTYPE_EXCLUDE)}"
+    disk_matcher = (
+        f"{base_matcher},fstype!~{json.dumps(HOST_DISK_FSTYPE_EXCLUDE)},"
+        f"mountpoint!~{json.dumps(HOST_DISK_MOUNTPOINT_EXCLUDE)}"
+    )
     disk_usage = (
         f"100 * (1 - node_filesystem_avail_bytes{{{disk_matcher}}}"
         f" / node_filesystem_size_bytes{{{disk_matcher}}})"

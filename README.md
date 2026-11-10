@@ -287,8 +287,10 @@ principal rules forwarded from `machine-observability`:
 
 - Usage must stay above the threshold for `5m` before an alert fires.
 - Disk usage is `1 - avail / size` for every mounted filesystem except
-  `tmpfs`, `devtmpfs`, `overlay`, `squashfs`, `iso9660`, and `ramfs`; one alert
-  per unit and mountpoint. Memory usage is `1 - MemAvailable / MemTotal`.
+  `tmpfs`, `devtmpfs`, `overlay`, `squashfs`, `iso9660`, and `ramfs`, and
+  except any mountpoint under `/snap/` (snaps mount as `fuse.snapfuse` inside
+  LXD containers and are always full); one alert per unit and mountpoint.
+  Memory usage is `1 - MemAvailable / MemTotal`.
 - The rules match `job="integrations/unix"` (the label Alloy's built-in
   exporter stamps on host-metric series; the `alloy-local` scrape job name
   never overrides it) plus the `juju_model_uuid` and `juju_application` of
