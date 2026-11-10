@@ -264,19 +264,10 @@ Verify a local unix-exporter metric in Mimir:
 juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/query?query=node_uname_info{juju_application=\"alloy-vm\"}'"
 ```
 
-Verify the built-in host alarm group reached the ruler:
-
-```bash
-juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/rules' | grep -o '[^\"]*-host-metrics'"
-```
-
 ### Built-in host alarms
 
-Every `alloy-vm` unit already scrapes its host every 60s with Alloy's built-in
-unix exporter. By default the leader also publishes one Prometheus rule group named
-`<model-uuid>-<alloy-vm application>-host-metrics` (for example
-`da137c2d-...-alloy-vm-host-metrics`) on `send-remote-write`, alongside any
-principal rules forwarded from `machine-observability`:
+The leader publishes one rule group, `<model-uuid>-<app>-host-metrics`, on
+`send-remote-write` for the hosts this application scrapes:
 
 | Alert | Fires when | Severity |
 |---|---|---|
@@ -285,37 +276,17 @@ principal rules forwarded from `machine-observability`:
 | `HostMemoryUsageWarning` | memory usage above 80% | `warning` |
 | `HostMemoryUsageCritical` | memory usage above 90% | `critical` |
 
-- Usage must stay above the threshold for `5m` before an alert fires.
-- Disk usage is `1 - avail / size` for every mounted filesystem except
-  `tmpfs`, `devtmpfs`, `overlay`, `squashfs`, `iso9660`, and `ramfs`, and
-  except any mountpoint under `/snap/` (snaps mount as `fuse.snapfuse` inside
-  LXD containers and are always full); one alert per unit and mountpoint.
-  Memory usage is `1 - MemAvailable / MemTotal`.
-- The rules match `job="integrations/unix"` (the label Alloy's built-in
-  exporter stamps on host-metric series; the `alloy-local` scrape job name
-  never overrides it) plus the `juju_model_uuid` and `juju_application` of
-  this `alloy-vm` application, so each application alerts only on the hosts
-  its own units scrape, two applications in one model never evaluate the same
-  host twice, and a node-exporter scraped through `metrics-endpoint` or
-  `manual-metrics-jobs` is not alerted on a second time. Alerts carry the
-  series' per-unit Juju topology labels; the rule adds only `severity`. The
-  model UUID and application in the group name keep it unique when several
-  models or applications feed one Mimir ruler namespace, which rejects
-  duplicate group names.
-- Warning and critical both fire above 90%. Silence the warning with an
-  Alertmanager inhibition rule if you only want one notification.
-- Rules travel only on `send-remote-write`; Grafana Cloud forwarding via
-  `grafana-cloud-config` carries metrics but not alert rules. The alarms never
-  change unit status when `send-remote-write` is absent.
-- Forwarded principal rules take precedence under the 60 KiB rule publication
-  ceiling: if adding the host group would exceed it, the leader publishes the
-  principal rules alone and logs `Host alarms skipped: publish-size`.
+- Alerts fire after `5m` above the threshold and carry the series' Juju
+  topology labels plus `severity`.
+- Disk usage is `1 - avail / size` per unit and mountpoint, skipping pseudo
+  filesystems (`tmpfs`, `devtmpfs`, `overlay`, `squashfs`, `iso9660`, `ramfs`)
+  and `/snap/*` mounts. Memory usage is `1 - MemAvailable / MemTotal`.
+- Warning and critical both fire above 90%; use an Alertmanager inhibition
+  rule if you want one notification.
+- Rules travel only on `send-remote-write`; `grafana-cloud-config` carries
+  metrics but not rules.
 
-Withdraw the group with:
-
-```bash
-juju config alloy-vm enable-host-alarms=false
-```
+Disable with `juju config alloy-vm enable-host-alarms=false`.
 
 ### Add a manual metrics scrape job
 

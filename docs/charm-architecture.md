@@ -64,9 +64,10 @@ Host usage rules are charm-owned rather than artifact-owned. `src/host_alert_rul
 builds one static group from the charm's own model UUID and application name, the
 topology `discovery.relabel "local_metrics"` stamps on the built-in exporter series.
 The leader appends that group after the flattened principal Prometheus groups on
-every reconcile, counts it toward the 60 KiB publication ceiling when admitting
-principal state, never stores it in the relation LKG cache, and never considers it
-in the destination-status check. `enable-host-alarms=false` withdraws it.
+every reconcile, never stores it in the relation LKG cache, and never considers it
+in the destination-status check. Principal rules are admitted against the 60 KiB
+publication ceiling first; if the host group no longer fits, it is skipped with a
+`Host alarms skipped: publish-size` warning. `enable-host-alarms=false` withdraws it.
 
 Dashboards deliberately bypass Alloy and relate directly from each principal
 to Grafana using the standard dashboard schema.
