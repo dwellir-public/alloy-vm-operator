@@ -12,6 +12,7 @@
 - receive logs over `syslog-receiver`
 - forward logs over `send-loki-logs`
 - validate and forward v3 Prometheus and Loki alert rules
+- publish built-in host disk and memory usage alert rules (opt-out via `enable-host-alarms`)
 
 `src/charm.py` stays orchestration-focused. Alloy service control and file management stay in
 [`src/alloy.py`](/home/erik/Loki-project/alloy-vm-operator/src/alloy.py), and Alloy config
@@ -58,6 +59,15 @@ retains only its own LKG. Both survive leadership changes. Omission and
 relation removal withdraw state. Non-empty v3 rules require model UUID and
 application ownership fields, and labels come from the original payload
 topology.
+
+Host usage rules are charm-owned rather than artifact-owned. `src/host_alert_rules.py`
+builds one static group from the charm's own model UUID and application name, the
+topology `discovery.relabel "local_metrics"` stamps on the built-in exporter series.
+The leader appends that group after the flattened principal Prometheus groups on
+every reconcile, never stores it in the relation LKG cache, and never considers it
+in the destination-status check. Principal rules are admitted against the 60 KiB
+publication ceiling first; if the host group no longer fits, it is skipped with a
+`Host alarms skipped: publish-size` warning. `enable-host-alarms=false` withdraws it.
 
 Dashboards deliberately bypass Alloy and relate directly from each principal
 to Grafana using the standard dashboard schema.

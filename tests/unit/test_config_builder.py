@@ -3,7 +3,12 @@
 
 import json
 
-from config_builder import ConfigBuilder, MetricsScrapeJob, ScrapeTarget
+from config_builder import (
+    HOST_METRICS_SCRAPE_INTERVAL,
+    ConfigBuilder,
+    MetricsScrapeJob,
+    ScrapeTarget,
+)
 from outbound_endpoints import OutboundEndpoint
 
 TOPOLOGY = {
@@ -45,6 +50,15 @@ def test_local_metrics_drop_without_remote_write():
     assert 'job_name   = "alloy-local"' in rendered
     assert "forward_to = []" in rendered
     assert 'prometheus.remote_write "metrics" {' not in rendered
+
+
+def test_local_metrics_scrape_every_sixty_seconds_regardless_of_alloy_default():
+    """Host metrics are pinned explicitly so a change in Alloy's default cannot alter them."""
+    rendered = _builder().build()
+
+    assert HOST_METRICS_SCRAPE_INTERVAL == "60s"
+    default_block = rendered.split('prometheus.scrape "default" {', 1)[1].split("}", 1)[0]
+    assert 'scrape_interval = "60s"' in default_block
 
 
 def test_local_metrics_forward_to_remote_write_when_endpoint_exists():

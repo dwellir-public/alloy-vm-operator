@@ -9,7 +9,7 @@ Supported bases:
 
 Alloy now supports:
 
-- local self metrics and `prometheus.exporter.unix` host metrics
+- local self metrics and `prometheus.exporter.unix` host metrics, scraped every 60s
 - relation-driven machine-local workload telemetry over `machine-observability`
 - relation-driven scrape targets over `metrics-endpoint` (`prometheus_scrape`)
 - manual scrape targets over `manual-metrics-jobs`
@@ -263,6 +263,30 @@ Verify a local unix-exporter metric in Mimir:
 ```bash
 juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/query?query=node_uname_info{juju_application=\"alloy-vm\"}'"
 ```
+
+### Built-in host alarms
+
+The leader publishes one rule group, `<model-uuid>-<app>-host-metrics`, on
+`send-remote-write` for the hosts this application scrapes:
+
+| Alert | Fires when | Severity |
+|---|---|---|
+| `HostDiskUsageWarning` | filesystem usage above 80% | `warning` |
+| `HostDiskUsageCritical` | filesystem usage above 90% | `critical` |
+| `HostMemoryUsageWarning` | memory usage above 80% | `warning` |
+| `HostMemoryUsageCritical` | memory usage above 90% | `critical` |
+
+- Alerts fire after `5m` above the threshold and carry the series' Juju
+  topology labels plus `severity`.
+- Disk usage is `1 - avail / size` per unit and mountpoint, skipping pseudo
+  filesystems (`tmpfs`, `devtmpfs`, `overlay`, `squashfs`, `iso9660`, `ramfs`)
+  and `/snap/*` mounts. Memory usage is `1 - MemAvailable / MemTotal`.
+- Warning and critical both fire above 90%; use an Alertmanager inhibition
+  rule if you want one notification.
+- Rules travel only on `send-remote-write`; `grafana-cloud-config` carries
+  metrics but not rules.
+
+Disable with `juju config alloy-vm enable-host-alarms=false`.
 
 ### Add a manual metrics scrape job
 
