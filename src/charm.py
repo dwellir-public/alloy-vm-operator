@@ -47,6 +47,7 @@ from config_builder import (
     ScrapeTarget,
 )
 from grafanacloud_connectivity import probe_endpoint
+from host_alert_rules import build_host_alert_rule_groups
 from machine_observability_sources import (
     MachineObservabilitySource,
     translate_machine_observability_payload,
@@ -356,6 +357,7 @@ class AlloyCharm(ops.CharmBase):
         if not self.unit.is_leader():
             return
         self._rule_validator.begin_reconcile()
+        host_groups = self._host_alert_rule_groups()
 
         removed_relation_id = None
         event_relation = getattr(event, "relation", None)
@@ -401,8 +403,10 @@ class AlloyCharm(ops.CharmBase):
                 relation_state = candidate
 
         prometheus_groups, loki_groups = self._flatten_rule_state(relation_state)
-        publish_rule_groups(self, "send-remote-write", prometheus_groups)
+        publish_rule_groups(self, "send-remote-write", [*prometheus_groups, *host_groups])
         publish_rule_groups(self, "send-loki-logs", loki_groups)
+        # Host alarms only ever travel on send-remote-write; host metrics may
+        # legitimately flow to Grafana Cloud instead, so they do not gate status.
         self._set_rule_destination_status(prometheus_groups, loki_groups)
 
     def _set_rule_destination_status(
@@ -1078,6 +1082,21 @@ class AlloyCharm(ops.CharmBase):
     def _syslog_receivers_enabled(self) -> bool:
         """Return True when syslog receiver listeners should be enabled."""
         return bool(self.config.get("enable-syslogreceivers", False))
+
+    def _host_alarms_enabled(self) -> bool:
+        """Return True when the built-in host usage alert rules should be published."""
+        return bool(self.config.get("enable-host-alarms", True))
+
+    def _host_alert_rule_groups(self) -> list[dict[str, object]]:
+        """Return charm-owned host usage alert groups when host alarms are enabled.
+
+        The rules are scoped to this charm's own model UUID and application,
+        the topology ``discovery.relabel "local_metrics"`` stamps on the
+        built-in exporter series.
+        """
+        if not self._host_alarms_enabled():
+            return []
+        return build_host_alert_rule_groups(model_uuid=self.model.uuid, application=self.app.name)
 
     def _journal_kernel_enabled(self) -> bool:
         """Return True when host kernel journal messages should be collected."""

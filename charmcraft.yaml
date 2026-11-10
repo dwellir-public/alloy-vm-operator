@@ -115,6 +115,16 @@ config:
         - `labels`
       default: ""
       type: string
+    enable-host-alarms:
+      description: |
+        Publish built-in host disk and memory usage alert rules (80% warning,
+        90% critical, 5m) for this application's hosts over send-remote-write.
+        The rules match the metrics Alloy's built-in unix exporter already
+        collects on every unit. Rules only travel on send-remote-write;
+        grafana-cloud-config carries metrics but not alert rules. Set to false
+        to withdraw the rule group.
+      default: true
+      type: boolean
 
 parts:
   cos-tool:

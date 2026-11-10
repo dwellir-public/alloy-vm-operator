@@ -29,6 +29,12 @@ def _accept_backend_rules(monkeypatch):
     monkeypatch.setattr(AlloyCharm, "_validate_artifact_rules", lambda *_args, **_kwargs: True)
 
 
+@pytest.fixture(autouse=True)
+def _disable_host_alarms(monkeypatch):
+    """Keep principal rule flow tests free of the charm-owned host group, tested elsewhere."""
+    monkeypatch.setattr(AlloyCharm, "_host_alarms_enabled", lambda _self: False)
+
+
 DEFAULT_ARGS = "--server.http.listen-addr=0.0.0.0:6987"
 
 

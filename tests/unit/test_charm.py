@@ -11,6 +11,7 @@ import pytest
 from ops import testing
 
 from charm import RULE_CACHE_KEY, AlloyCharm
+from host_alert_rules import build_host_alert_rule_groups
 
 DEFAULT_ARGS = "--server.http.listen-addr=0.0.0.0:6987"
 
@@ -149,7 +150,9 @@ def test_start_clears_legacy_remote_write_metadata(monkeypatch):
     state_out = ctx.run(ctx.on.start(), testing.State(relations=[remote_write], leader=True))
 
     relation_out = state_out.get_relation(remote_write.id)
-    assert relation_out.local_app_data["alert_rules"] == '{"groups":[]}'
+    assert json.loads(relation_out.local_app_data["alert_rules"])["groups"] == (
+        build_host_alert_rule_groups(model_uuid=state_out.model.uuid, application="alloy-vm")
+    )
     metadata = json.loads(relation_out.local_app_data["metadata"])
     assert set(metadata) == {"application", "model", "model_uuid", "unit"}
     assert metadata["application"] == "alloy-vm"
