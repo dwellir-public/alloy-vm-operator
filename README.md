@@ -9,7 +9,7 @@ Supported bases:
 
 Alloy now supports:
 
-- local self metrics and `prometheus.exporter.unix` host metrics
+- local self metrics and `prometheus.exporter.unix` host metrics, scraped every 60s
 - relation-driven machine-local workload telemetry over `machine-observability`
 - relation-driven scrape targets over `metrics-endpoint` (`prometheus_scrape`)
 - manual scrape targets over `manual-metrics-jobs`
@@ -272,8 +272,8 @@ juju ssh mimir-vm/<unit> "curl -fsS 'http://127.0.0.1:9009/prometheus/api/v1/rul
 
 ### Built-in host alarms
 
-Every `alloy-vm` unit already scrapes its host with Alloy's built-in unix
-exporter. By default the leader also publishes one Prometheus rule group named
+Every `alloy-vm` unit already scrapes its host every 60s with Alloy's built-in
+unix exporter. By default the leader also publishes one Prometheus rule group named
 `<model-uuid>-<alloy-vm application>-host-metrics` (for example
 `da137c2d-...-alloy-vm-host-metrics`) on `send-remote-write`, alongside any
 principal rules forwarded from `machine-observability`:

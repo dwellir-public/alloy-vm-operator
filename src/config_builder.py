@@ -28,6 +28,9 @@ REMOTE_WRITE_MAX_KEEPALIVE = "30m"
 # job_name of prometheus.scrape "default", and anything selecting them has to
 # match it.
 HOST_METRICS_JOB_LABEL = "integrations/unix"
+# Host metrics are cheap and their value is in the resolution, so the local
+# scrape is pinned here rather than relying on Alloy's default interval.
+HOST_METRICS_SCRAPE_INTERVAL = "60s"
 DEFAULT_SYSLOG_ACCESS_DROP_EXPRESSIONS = [
     '.*"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE) .* HTTP/.*"',
 ]
@@ -237,6 +240,7 @@ class ConfigBuilder:
                 'prometheus.scrape "default" {',
                 "  targets    = discovery.relabel.local_metrics.output",
                 '  job_name   = "alloy-local"',
+                f"  scrape_interval = {json.dumps(HOST_METRICS_SCRAPE_INTERVAL)}",
                 f"  forward_to = {self._metrics_forward_to()}",
                 "}",
             ]
