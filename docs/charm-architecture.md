@@ -127,8 +127,13 @@ metadata. Units installed before the marker existed claim the Alloy they run
 on their first hook after a refresh, without a restart; units installed by
 this revision never claim an unmanaged Alloy on their own. The `adopt-alloy`
 action hands an unmanaged deb-package Alloy to a unit, preserving its config,
-and restores the marker if it fails. On `stop` the owner releases the marker
-and leaves Alloy running, and the next unit on the machine takes over.
+and restores the marker if it fails. On removal, the unit's relation-broken
+hooks first re-render the config without the departed relations and reload or
+restart Alloy; then, on `stop`, the owner releases the marker and leaves Alloy
+running on that config. The next unit on the machine claims the released
+marker, starts Alloy if needed and writes its own config, rewriting whatever
+the previous manager left on disk. If no other unit will manage the machine,
+purge the package with `apt-get purge alloy`.
 
 ## Operational Notes
 

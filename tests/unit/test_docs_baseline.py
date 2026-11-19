@@ -14,8 +14,15 @@ def _section(text, heading):
     return text[start : end if end != -1 else len(text)]
 
 
+def _flat(text):
+    """Collapse line wrapping so phrases match across line breaks."""
+    return " ".join(text.split())
+
+
 def _readme_section():
-    return _section((ROOT / "README.md").read_text(encoding="utf-8"), "## One Alloy per machine")
+    return _flat(
+        _section((ROOT / "README.md").read_text(encoding="utf-8"), "## One Alloy per machine")
+    )
 
 
 def test_readme_describes_one_alloy_per_machine_before_alert_rule_transport():
@@ -48,3 +55,26 @@ def test_architecture_doc_mentions_the_marker_and_the_action():
 
     assert "/var/lib/juju-alloy/owner.json" in architecture
     assert "adopt-alloy" in architecture
+
+
+def test_readme_describes_removal_hand_over_and_older_failed_installs():
+    section = _readme_section()
+
+    for expected in (
+        "relation-broken hooks",
+        "releases ownership and leaves Alloy running on that config",
+        "starts Alloy if needed and writes its own config",
+        "stuck failing its install",
+    ):
+        assert expected in section, expected
+
+
+def test_architecture_doc_describes_removal_hand_over():
+    architecture = _flat((ROOT / "docs" / "charm-architecture.md").read_text(encoding="utf-8"))
+
+    for expected in (
+        "relation-broken hooks",
+        "starts Alloy if needed and writes its own config",
+        "apt-get purge alloy",
+    ):
+        assert expected in architecture, expected

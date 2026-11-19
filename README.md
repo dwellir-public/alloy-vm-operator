@@ -721,12 +721,22 @@ refresh. Claiming restarts nothing and rewrites no config. A unit of an older
 `alloy-sub` or `alloy-vm` revision on the same machine writes no marker, so
 refresh it first and do not run `adopt-alloy` there. Where two older units
 already share a machine, the first to be refreshed keeps Alloy and the other
-blocks; remove the other one.
+blocks; remove the other one. A unit from an older revision that was stuck
+failing its install when refreshed is treated as newly installed and may need
+`adopt-alloy`.
 
 ### Removal
 
-A removed unit releases ownership and leaves Alloy running. The next unit on
-the machine takes it over, with its own config, without `adopt-alloy`.
+When a unit is removed, its relation-broken hooks first re-render the config
+without the departed relations and reload or restart Alloy. The unit then
+releases ownership and leaves Alloy running on that config. The next unit on
+the machine takes it over without `adopt-alloy`: it starts Alloy if needed and
+writes its own config. If no other unit will manage the machine, purge the
+package:
+
+```bash
+juju ssh <machine> sudo apt-get purge alloy
+```
 
 ## Alert rule transport
 
