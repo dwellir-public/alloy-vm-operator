@@ -1055,3 +1055,36 @@ def test_non_owner_syslog_reason_does_not_name_an_owner_when_the_marker_is_relea
     relation_out = state_out.get_relation(syslog.id)
     assert relation_out.local_unit_data["ready"] == "false"
     assert relation_out.local_unit_data["reason"] == SYSLOG_NOT_OWNER
+
+
+@pytest.mark.real_ownership
+def test_takeover_with_a_contract_error_applies_nothing_and_stays_pending(alloy_marker_dir):
+    blocked = _blocked_by_other_then_released("package")
+
+    with patch.object(
+        AlloyCharm, "_machine_observability_contract_error", lambda _self: "contract broken"
+    ):
+        waiting, mocks = _run("update_status", blocked, installation="package")
+
+    assert waiting.unit_status == testing.BlockedStatus("contract broken")
+    assert _order(mocks, "write_config_text", "start", "restart", "reload") == []
+    assert _charm_stored(waiting)["takeover_pending"] is True
+    assert alloy_ownership.current_owner() == UNIT
+
+    state_out, mocks = _run("update_status", waiting, installation="package")
+
+    assert _order(mocks, "write_config_text", "start") == ["write_config_text", "start"]
+    assert _charm_stored(state_out)["takeover_pending"] is False
+    assert not isinstance(state_out.unit_status, testing.BlockedStatus)
+
+
+@pytest.mark.real_ownership
+def test_adopt_with_a_contract_error_fails_and_rolls_back(alloy_marker_dir):
+    with patch.object(
+        AlloyCharm, "_machine_observability_contract_error", lambda _self: "contract broken"
+    ):
+        message, _, mocks = _run_action_failure(_installed_here(), installation="package")
+
+    assert message == "Adoption failed: contract broken"
+    assert _order(mocks, "write_config_text", "start", "restart", "reload") == []
+    assert alloy_ownership.current_owner() is None

@@ -355,6 +355,10 @@ class AlloyCharm(ops.CharmBase):
         if not self._acquire_or_block(installation):
             return False
         self._forget_applied_config()
+        contract_error = self._machine_observability_contract_error()
+        if contract_error is not None:
+            # Nothing can be rendered, so Alloy is not started on another manager's config.
+            return self._close_gate(ops.BlockedStatus(contract_error))
         try:
             status = self._render_and_apply()
             if status is not None:
@@ -500,6 +504,9 @@ class AlloyCharm(ops.CharmBase):
         self._acquire_alloy(installation)
         if not self._prior_names_this_unit(claim):
             self._forget_applied_config()
+        contract_error = self._machine_observability_contract_error()
+        if contract_error is not None:
+            raise RuntimeError(contract_error)
         status = self._render_and_apply()
         if status is None:
             raise RuntimeError(self._render_failure or "the Alloy config was not applied")
