@@ -131,8 +131,8 @@ and restores the marker if it fails. On removal, the unit's relation-broken
 hooks first re-render the config without the departed relations and reload or
 restart Alloy; then, on `stop`, the owner releases the marker and leaves Alloy
 running on that config. The next unit on the machine claims the released
-marker, starts Alloy if needed and writes its own config, rewriting whatever
-the previous manager left on disk. If no other unit will manage the machine,
+marker, writes its own config over whatever the previous manager left on
+disk, and then makes sure Alloy is running. If no other unit will manage the machine,
 purge the package with `apt-get purge alloy`.
 
 ## Operational Notes

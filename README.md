@@ -730,8 +730,8 @@ failing its install when refreshed is treated as newly installed and may need
 When a unit is removed, its relation-broken hooks first re-render the config
 without the departed relations and reload or restart Alloy. The unit then
 releases ownership and leaves Alloy running on that config. The next unit on
-the machine takes it over without `adopt-alloy`: it starts Alloy if needed and
-writes its own config. If no other unit will manage the machine, purge the
+the machine takes it over without `adopt-alloy`: it writes its own config and then
+makes sure Alloy is running. If no other unit will manage the machine, purge the
 package:
 
 ```bash

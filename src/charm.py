@@ -93,6 +93,7 @@ _OWNERSHIP_STATUS_PREFIXES = (
 _ADOPTION_STORED_KEYS = (
     "alloy_installed",
     "install_pending",
+    "takeover_pending",
     "last_good_config",
     "last_failed_config_path",
     "config_drifted",
@@ -176,12 +177,15 @@ class AlloyCharm(ops.CharmBase):
             install_hook_seen=False,
             install_pending=False,
             alloy_installed=False,
+            takeover_pending=False,
         )
         self._install_failed = False
         self._install_error: Exception | None = None
         # The status of the first failure to acquire Alloy in this dispatch.
-        self._acquire_failure: str | None = None
+        self._acquire_failure: ops.StatusBase | None = None
+        # Set when this dispatch finished a takeover, with the status its render returned.
         self._took_over = False
+        self._takeover_status: ops.StatusBase | None = None
         self._render_failure: str | None = None
         self._topology = JujuTopology.from_charm(self)
         self._rule_validator = CosToolRuleValidator()
@@ -270,7 +274,7 @@ class AlloyCharm(ops.CharmBase):
         )
 
     def _ensure_alloy_ownership(self, *, take_over: bool = True) -> bool:
-        """Return whether this unit owns the machine's Alloy, acquiring it on first ownership.
+        """Return whether this unit owns the machine's Alloy and has finished acquiring it.
 
         A unit that does not own Alloy, or cannot tell, is blocked and must not
         touch the service; failures block the unit instead of failing the hook.
@@ -299,9 +303,11 @@ class AlloyCharm(ops.CharmBase):
         if result.state != "owned":
             self.unit.status = ops.BlockedStatus(UNMANAGED_ALLOY_MESSAGE)
             return False
-        return self._ensure_alloy_installed(
-            installation, take_over=take_over, taking_over=self._is_takeover(result)
-        )
+        if take_over and (self._is_takeover(result) or self._stored.install_pending):
+            self._begin_takeover()
+        if take_over and self._stored.takeover_pending:
+            return self._continue_takeover(installation)
+        return self._ensure_alloy_installed(installation)
 
     def _prior_names_this_unit(self, claim: alloy_ownership.Claim) -> bool:
         """Return whether the marker named this unit before the claim; unreadable is no."""
@@ -327,43 +333,75 @@ class AlloyCharm(ops.CharmBase):
             return True
         return bool(self._stored.install_hook_seen)
 
-    def _ensure_alloy_installed(
-        self, installation: str, *, take_over: bool, taking_over: bool
-    ) -> bool:
-        """Acquire Alloy once this unit owns it; block and report False when that fails.
+    def _begin_takeover(self) -> None:
+        """Record a takeover before acquiring anything, so it survives any failure that follows.
 
-        A unit taking over installs or keeps Alloy, starts it, and forgets the
-        config it last applied, because the files on disk may be another
-        manager's; its next render therefore writes and restarts. A failure
-        leaves ``alloy_installed`` false so a later hook retries; within one
-        dispatch the attempt is made only once.
+        An install this unit never finished is completed the same way.
         """
-        if self._stored.alloy_installed and not taking_over:
+        self._stored.takeover_pending = True
+        self._stored.alloy_installed = False
+        self._forget_applied_config()
+
+    def _continue_takeover(self, installation: str) -> bool:
+        """Run a pending takeover to completion: acquire, render, start; report success.
+
+        The render is forced, because the applied config was forgotten, and its
+        restart is what brings up a stopped or start-limited Alloy; ``start``
+        then makes sure the service is enabled and running. Any failure leaves
+        ``takeover_pending`` set, so the next hook runs the sequence again.
+        """
+        if self._acquire_failure is not None:
+            return self._close_gate(self._acquire_failure)
+        if not self._acquire_or_block(installation):
+            return False
+        self._forget_applied_config()
+        try:
+            status = self._render_and_apply()
+            if status is not None:
+                alloy.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alloy takeover failed: %s", exc)
+            return self._close_gate(ops.BlockedStatus(f"Alloy takeover failed: {exc}"))
+        if status is None:
+            return self._close_gate(self._invalid_config_status())
+        self._stored.takeover_pending = False
+        self._took_over = True
+        self._takeover_status = status
+        self.unit.status = status
+        return True
+
+    def _invalid_config_status(self) -> ops.StatusBase:
+        """Return the status for a render that applied nothing, keeping a non-ownership block."""
+        if self._is_ownership_status() or not isinstance(self.unit.status, ops.BlockedStatus):
+            return ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
+        return self.unit.status
+
+    def _ensure_alloy_installed(self, installation: str) -> bool:
+        """Acquire Alloy for an owner that is not taking over; report False when that fails.
+
+        This is the legacy unit's first claim, which keeps its running Alloy, and
+        the original install hook. An owner with ``alloy_installed`` set and no
+        unfinished install has nothing to do. A failure leaves ``alloy_installed``
+        false so a later hook retries; within one dispatch the attempt is made once.
+        """
+        if self._stored.alloy_installed and not self._stored.install_pending:
             return True
         if self._acquire_failure is not None:
-            return self._fail_acquire(self._acquire_failure)
+            return self._close_gate(self._acquire_failure)
+        return self._acquire_or_block(installation)
+
+    def _acquire_or_block(self, installation: str) -> bool:
+        """Install or keep Alloy; block with the matching status when that fails."""
+        installing = self._install_needed(installation)
         try:
             self._acquire_alloy(installation)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Alloy installation failed: %s", exc)
-            self._install_error = exc
-            return self._fail_acquire(f"Installation failed: {exc}")
-        if taking_over:
-            self._forget_applied_config()
-        if take_over and (taking_over or self._stored.install_hook_seen):
-            return self._start_acquired_alloy()
-        return True
-
-    def _start_acquired_alloy(self) -> bool:
-        """Start the Alloy this unit just acquired; block and report False when that fails."""
-        try:
-            alloy.start()
-        except Exception as exc:  # noqa: BLE001
+            if installing:
+                logger.warning("Alloy installation failed: %s", exc)
+                self._install_error = exc
+                return self._close_gate(ops.BlockedStatus(f"Installation failed: {exc}"))
             logger.warning("Alloy takeover failed: %s", exc)
-            # Retried whole by a later hook.
-            self._stored.alloy_installed = False
-            return self._fail_acquire(f"Alloy takeover failed: {exc}")
-        self._took_over = True
+            return self._close_gate(ops.BlockedStatus(f"Alloy takeover failed: {exc}"))
         return True
 
     def _forget_applied_config(self) -> None:
@@ -384,10 +422,10 @@ class AlloyCharm(ops.CharmBase):
         self._preserve_default_config()
         self._stored.alloy_installed = True
 
-    def _fail_acquire(self, message: str) -> bool:
-        """Block the unit on a failure to acquire Alloy and report that the gate is closed."""
-        self._acquire_failure = message
-        self.unit.status = ops.BlockedStatus(message)
+    def _close_gate(self, status: ops.StatusBase) -> bool:
+        """Set the status of a failure to acquire Alloy, repeated for the rest of the dispatch."""
+        self._acquire_failure = status
+        self.unit.status = status
         self._install_failed = self._install_error is not None
         return False
 
@@ -429,14 +467,6 @@ class AlloyCharm(ops.CharmBase):
             _OWNERSHIP_STATUS_PREFIXES
         )
 
-    def _apply_takeover_config(self) -> None:
-        """Write this unit's config after it took over the machine's Alloy in this hook."""
-        status = self._render_and_apply()
-        if status is not None:
-            self.unit.status = status
-        elif self._is_ownership_status() or not isinstance(self.unit.status, ops.BlockedStatus):
-            self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
-
     def _on_adopt_alloy_action(self, event: ops.ActionEvent) -> None:
         """Hand an unmanaged, deb-package Alloy to this unit.
 
@@ -466,14 +496,15 @@ class AlloyCharm(ops.CharmBase):
         )
 
     def _adopt(self, claim: alloy_ownership.Claim, installation: str) -> None:
-        """Acquire and start Alloy and apply this unit's config; raise when any step fails."""
+        """Acquire Alloy, apply this unit's config, then start it; raise when any step fails."""
         self._acquire_alloy(installation)
         if not self._prior_names_this_unit(claim):
             self._forget_applied_config()
-        alloy.start()
         status = self._render_and_apply()
         if status is None:
             raise RuntimeError(self._render_failure or "the Alloy config was not applied")
+        alloy.start()
+        self._stored.takeover_pending = False
         self.unit.status = status
 
     def _claim_for_adoption(
@@ -563,8 +594,8 @@ class AlloyCharm(ops.CharmBase):
             self._refresh_remote_write_relation_metadata()
             self._refresh_syslog_receiver_relations()
             self.unit.status = ops.ActiveStatus("Alloy is running")
-            if self._took_over:
-                self._apply_takeover_config()
+            if self._took_over and self._takeover_status is not None:
+                self.unit.status = self._takeover_status
         finally:
             self._reconcile_rule_groups(event)
 
@@ -639,7 +670,6 @@ class AlloyCharm(ops.CharmBase):
                 self._refresh_syslog_receiver_relations()
                 return
             if self._took_over:
-                self._apply_takeover_config()
                 self._refresh_syslog_receiver_relations()
                 return
             if self._is_ownership_status():
@@ -1536,7 +1566,7 @@ class AlloyCharm(ops.CharmBase):
         if not self._syslog_receivers_enabled():
             return False, "syslog receivers disabled"
         if not self._owns_alloy():
-            return False, "Alloy on this machine is managed by another unit"
+            return False, "this unit does not manage Alloy on this machine"
         if not self._loki_endpoint_urls():
             return False, "waiting for send-loki-logs relation"
         return True, "ready"

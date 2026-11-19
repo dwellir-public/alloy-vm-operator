@@ -308,7 +308,8 @@ def test_install_failure_keeps_maintenance_defers_keeps_the_marker_and_retries(
 
     mocks["install"].assert_called_once()
     mocks["preserve_default_config"].assert_called_once()
-    assert _call_names(mocks)[:3] == ["install", "preserve_default_config", "start"]
+    names = ("install", "preserve_default_config", "write_config_text", "start")
+    assert _order(mocks, *names) == list(names)
     assert state_out.deferred == []
     assert not isinstance(state_out.unit_status, testing.BlockedStatus)
     assert alloy_ownership.current_owner() == UNIT
@@ -344,7 +345,7 @@ def test_blocked_unit_installs_and_configures_once_the_owner_releases(alloy_mark
 
     state_out, mocks = _run("update_status", blocked, installation="none")
 
-    names = ("install", "preserve_default_config", "start", "write_config_text")
+    names = ("install", "preserve_default_config", "write_config_text", "start")
     assert _order(mocks, *names) == list(names)
     assert alloy_ownership.current_owner() == UNIT
     assert not isinstance(state_out.unit_status, testing.BlockedStatus)
@@ -355,8 +356,8 @@ def test_blocked_unit_takes_over_a_released_package_alloy(alloy_marker_dir):
 
     state_out, mocks = _run("update_status", blocked, installation="package")
 
-    names = ("install", "preserve_default_config", "start", "write_config_text")
-    assert _order(mocks, *names) == ["preserve_default_config", "start", "write_config_text"]
+    names = ("install", "preserve_default_config", "write_config_text", "start")
+    assert _order(mocks, *names) == ["preserve_default_config", "write_config_text", "start"]
     assert alloy_ownership.current_owner() == UNIT
     assert not isinstance(state_out.unit_status, testing.BlockedStatus)
 
@@ -367,8 +368,8 @@ def test_blocked_unit_takes_over_on_config_and_relation_events(alloy_marker_dir,
 
     state_out, mocks = _run(event_name, blocked, installation="package")
 
-    names = ("install", "preserve_default_config", "start", "write_config_text")
-    assert _order(mocks, *names) == ["preserve_default_config", "start", "write_config_text"]
+    names = ("install", "preserve_default_config", "write_config_text", "start")
+    assert _order(mocks, *names) == ["preserve_default_config", "write_config_text", "start"]
     assert not isinstance(state_out.unit_status, testing.BlockedStatus)
 
 
@@ -382,13 +383,13 @@ def test_takeover_whose_start_fails_is_retried_by_the_next_hook(alloy_marker_dir
     )
 
     assert failed.unit_status == testing.BlockedStatus(TAKEOVER_FAILED)
-    mocks["write_config_text"].assert_not_called()
+    assert _order(mocks, "write_config_text", "start") == ["write_config_text", "start"]
     assert alloy_ownership.current_owner() == UNIT
 
     state_out, mocks = _run("update_status", failed, installation="package")
 
-    names = ("install", "preserve_default_config", "start", "write_config_text")
-    assert _order(mocks, *names) == ["preserve_default_config", "start", "write_config_text"]
+    names = ("install", "preserve_default_config", "write_config_text", "start")
+    assert _order(mocks, *names) == ["preserve_default_config", "write_config_text", "start"]
     assert not isinstance(state_out.unit_status, testing.BlockedStatus)
 
 
@@ -523,8 +524,8 @@ def test_adopt_claims_unmanaged_package_alloy(alloy_marker_dir):
 
     assert alloy_ownership.current_owner() == UNIT
     mocks["install"].assert_not_called()
-    names = ("install", "preserve_default_config", "start", "write_config_text")
-    assert _order(mocks, *names) == ["preserve_default_config", "start", "write_config_text"]
+    names = ("install", "preserve_default_config", "write_config_text", "start")
+    assert _order(mocks, *names) == ["preserve_default_config", "write_config_text", "start"]
     assert isinstance(state_out.unit_status, testing.ActiveStatus)
 
 
@@ -640,7 +641,7 @@ def test_adoption_whose_start_fails_puts_the_marker_and_the_flags_back(alloy_mar
     )
 
     assert message == "Adoption failed: alloy did not become active"
-    mocks["write_config_text"].assert_not_called()
+    assert _order(mocks, "write_config_text", "start") == ["write_config_text", "start"]
     assert _marker_bytes(alloy_marker_dir) is None
     stored = _charm_stored(after)
     assert stored.get("alloy_installed") is False
@@ -671,7 +672,7 @@ def test_adopt_finishes_an_interrupted_install(alloy_marker_dir):
         dataclasses.replace(failed, deferred=[]), installation="other"
     )
 
-    names = ("install", "preserve_default_config", "start", "write_config_text")
+    names = ("install", "preserve_default_config", "write_config_text", "start")
     assert _order(mocks, *names) == list(names)
     assert alloy_ownership.current_owner() == UNIT
     assert isinstance(state_out.unit_status, testing.ActiveStatus)
@@ -757,7 +758,7 @@ def test_unit_taking_over_a_released_stopped_alloy_starts_and_renders(alloy_mark
     )
 
     mocks["start"].assert_called_once()
-    assert _order(mocks, "start", "write_config_text") == ["start", "write_config_text"]
+    assert _order(mocks, "start", "write_config_text") == ["write_config_text", "start"]
     _assert_took_over(state_out, mocks)
 
 
@@ -887,6 +888,7 @@ def test_adopt_fails_and_rolls_back_when_alloy_cannot_be_restarted(alloy_marker_
     _assert_next_hook_writes_no_config(after, UNMANAGED)
 
 
+SYSLOG_NOT_OWNER = "this unit does not manage Alloy on this machine"
 SYSLOG_CONFIG: dict[str, str | int | float | bool] = {"enable-syslogreceivers": True}
 
 
@@ -912,7 +914,7 @@ def test_non_owner_does_not_advertise_a_syslog_receiver(alloy_marker_dir, monkey
     relation_out = state_out.get_relation(syslog.id)
     assert relation_out.local_unit_data == {
         "ready": "false",
-        "reason": "Alloy on this machine is managed by another unit",
+        "reason": SYSLOG_NOT_OWNER,
         "recommended-protocol": "tcp",
     }
     assert relation_out.local_app_data == relation_out.local_unit_data
@@ -930,3 +932,126 @@ def test_owner_still_advertises_its_syslog_receiver(alloy_marker_dir, monkeypatc
     assert relation_out.local_unit_data["ready"] == "true"
     assert relation_out.local_unit_data["port"] == "1514"
     assert relation_out.local_unit_data["address"] == "10.0.0.10"
+
+
+# A takeover is carried through failures and renders before starting.
+
+
+def _takeover_pending(state):
+    return _charm_stored(state).get("takeover_pending") is True
+
+
+def test_legacy_takeover_whose_preserve_fails_is_finished_by_the_next_hook(alloy_marker_dir):
+    blocked = _legacy_blocked_then_released()
+    failed, mocks = _run(
+        "update_status",
+        blocked,
+        installation="package",
+        side_effects={"preserve_default_config": OSError("disk full")},
+    )
+
+    assert failed.unit_status == testing.BlockedStatus("Alloy takeover failed: disk full")
+    mocks["write_config_text"].assert_not_called()
+    assert _takeover_pending(failed)
+
+    state_out, mocks = _run(
+        "config_changed", failed, installation="package", side_effects={"is_active": _stopped}
+    )
+
+    names = ("preserve_default_config", "write_config_text", "restart", "start")
+    assert _order(mocks, *names)[:4] == list(names)
+    assert not isinstance(state_out.unit_status, testing.BlockedStatus)
+    assert not _takeover_pending(state_out)
+
+
+def test_takeover_renders_before_a_start_that_fails_and_the_next_hook_starts(alloy_marker_dir):
+    blocked = _legacy_blocked_then_released()
+    failed, mocks = _run(
+        "update_status",
+        blocked,
+        installation="package",
+        side_effects={"start": RuntimeError("alloy did not become active")},
+    )
+
+    assert _order(mocks, "write_config_text", "start") == ["write_config_text", "start"]
+    assert failed.unit_status == testing.BlockedStatus(TAKEOVER_FAILED)
+    assert _takeover_pending(failed)
+
+    state_out, mocks = _run("update_status", failed, installation="package")
+
+    mocks["start"].assert_called_once()
+    assert not isinstance(state_out.unit_status, testing.BlockedStatus)
+    assert not _takeover_pending(state_out)
+
+
+def test_takeover_keeps_rendering_and_retrying_start_while_it_fails(alloy_marker_dir):
+    state = _legacy_blocked_then_released()
+    for hook in range(4):
+        state, mocks = _run(
+            "update_status",
+            state,
+            installation="package",
+            side_effects={"start": RuntimeError("alloy did not become active")},
+        )
+        assert mocks["start"].call_count == 1, hook
+        assert mocks["write_config_text"].call_count == 1, hook
+        assert mocks["restart"].call_count == 1, hook
+        assert state.unit_status == testing.BlockedStatus(TAKEOVER_FAILED)
+        assert _takeover_pending(state)
+
+
+def test_regained_owner_whose_install_fails_retries_the_install(alloy_marker_dir):
+    state = _owner_that_lost_then_regained_the_marker()
+    assert _charm_stored(state)["alloy_installed"] is True
+
+    failed, mocks = _run("update_status", state, installation="none", install_error=APT_DOWN)
+    assert failed.unit_status == testing.BlockedStatus(f"Installation failed: {APT_DOWN}")
+    mocks["install"].assert_called_once()
+
+    again, mocks = _run("update_status", failed, installation="none", install_error=APT_DOWN)
+    mocks["install"].assert_called_once()
+    assert not isinstance(again.unit_status, testing.ActiveStatus)
+
+    state_out, mocks = _run("update_status", again, installation="none")
+    names = ("install", "preserve_default_config", "write_config_text", "start")
+    assert _order(mocks, *names) == list(names)
+    assert not isinstance(state_out.unit_status, testing.BlockedStatus)
+
+
+def test_adopt_renders_a_stopped_alloy_before_starting_it(alloy_marker_dir):
+    _, state_out, mocks = _run_action(
+        _unmanaged_blocked(), installation="package", side_effects={"is_active": _stopped}
+    )
+
+    names = ("preserve_default_config", "write_config_text", "restart", "start")
+    assert _order(mocks, *names) == list(names)
+    assert isinstance(state_out.unit_status, testing.ActiveStatus)
+
+
+def test_adopt_whose_start_fails_after_the_render_rolls_back(alloy_marker_dir):
+    message, after, mocks = _run_action_failure(
+        _unmanaged_blocked(),
+        installation="package",
+        side_effects={"is_active": _stopped, "start": RuntimeError("alloy did not become active")},
+    )
+
+    assert message == "Adoption failed: alloy did not become active"
+    assert _order(mocks, "write_config_text", "start") == ["write_config_text", "start"]
+    assert _marker_bytes(alloy_marker_dir) is None
+    _assert_next_hook_writes_no_config(after, UNMANAGED)
+
+
+def test_non_owner_syslog_reason_does_not_name_an_owner_when_the_marker_is_released(
+    alloy_marker_dir, monkeypatch
+):
+    _with_loki(monkeypatch)
+    alloy_ownership.claim("other-sub/3", installed=False)
+    alloy_ownership.release("other-sub/3")
+    state, syslog = _syslog_state()
+
+    with patch("charm.alloy_ownership.claim", side_effect=OSError("read-only")):
+        state_out, _ = _run("update_status", state, installation="package")
+
+    relation_out = state_out.get_relation(syslog.id)
+    assert relation_out.local_unit_data["ready"] == "false"
+    assert relation_out.local_unit_data["reason"] == SYSLOG_NOT_OWNER

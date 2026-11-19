@@ -63,7 +63,7 @@ def test_readme_describes_removal_hand_over_and_older_failed_installs():
     for expected in (
         "relation-broken hooks",
         "releases ownership and leaves Alloy running on that config",
-        "starts Alloy if needed and writes its own config",
+        "writes its own config and then makes sure Alloy is running",
         "stuck failing its install",
     ):
         assert expected in section, expected
@@ -74,7 +74,7 @@ def test_architecture_doc_describes_removal_hand_over():
 
     for expected in (
         "relation-broken hooks",
-        "starts Alloy if needed and writes its own config",
+        "then makes sure Alloy is running",
         "apt-get purge alloy",
     ):
         assert expected in architecture, expected
