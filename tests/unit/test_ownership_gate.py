@@ -381,9 +381,7 @@ def test_takeover_whose_start_fails_is_retried_by_the_next_hook(alloy_marker_dir
         side_effects={"start": RuntimeError("alloy did not become active")},
     )
 
-    assert failed.unit_status == testing.BlockedStatus(
-        "Installation failed: alloy did not become active"
-    )
+    assert failed.unit_status == testing.BlockedStatus(TAKEOVER_FAILED)
     mocks["write_config_text"].assert_not_called()
     assert alloy_ownership.current_owner() == UNIT
 
@@ -701,3 +699,234 @@ def test_charmcraft_declares_adopt_alloy_with_only_force():
     assert action["params"]["force"]["default"] is False
     assert action["additionalProperties"] is False
     assert DEFAULT_PACKAGE_CONFIG_BACKUP_PATH in action["description"]
+
+
+# Review fixes.
+
+TAKEOVER_FAILED = "Alloy takeover failed: alloy did not become active"
+FOREIGN_CONFIG = '// written by another manager\nlogging { level = "debug" }\n'
+
+
+def _stopped(**_kwargs):
+    return False
+
+
+def _legacy_blocked_then_released():
+    """Return a legacy unit that blocked on another owner, after that owner released."""
+    alloy_ownership.claim("other-sub/3", installed=True, allow_existing=True)
+    blocked, _ = _run("update_status", _legacy(), installation="package")
+    assert blocked.unit_status == testing.BlockedStatus(OTHER)
+    alloy_ownership.release("other-sub/3")
+    return blocked
+
+
+def _owner():
+    """Return an established owner installed by this revision, with its config applied."""
+    installed, _ = _run("install", testing.State(relations=_relations()), installation="none")
+    owner, _ = _run("config_changed", installed, installation="package")
+    assert _charm_stored(owner)["alloy_installed"] is True
+    assert _charm_stored(owner)["last_good_config"]
+    return owner
+
+
+def _owner_that_lost_then_regained_the_marker():
+    """Return an owner whose marker was forced away by another unit, which then released."""
+    owner = _owner()
+    alloy_ownership.claim("other-sub/3", installed=True, force=True)
+    blocked, _ = _run("update_status", owner, installation="package")
+    assert blocked.unit_status == testing.BlockedStatus(OTHER)
+    alloy_ownership.release("other-sub/3")
+    return blocked
+
+
+def _assert_took_over(state_out, mocks):
+    mocks["write_config_text"].assert_called_once()
+    assert mocks["restart"].called or mocks["reload"].called
+    assert not isinstance(state_out.unit_status, testing.BlockedStatus)
+    assert alloy_ownership.current_owner() == UNIT
+
+
+@pytest.mark.parametrize(
+    "blocked", [_legacy_blocked_then_released, _owner_that_lost_then_regained_the_marker]
+)
+def test_unit_taking_over_a_released_stopped_alloy_starts_and_renders(alloy_marker_dir, blocked):
+    state = blocked()
+
+    state_out, mocks = _run(
+        "update_status", state, installation="package", side_effects={"is_active": _stopped}
+    )
+
+    mocks["start"].assert_called_once()
+    assert _order(mocks, "start", "write_config_text") == ["start", "write_config_text"]
+    _assert_took_over(state_out, mocks)
+
+
+@pytest.mark.parametrize(
+    "blocked", [_legacy_blocked_then_released, _owner_that_lost_then_regained_the_marker]
+)
+def test_unit_taking_over_a_foreign_running_config_rewrites_it(
+    alloy_marker_dir, config_path, blocked
+):
+    state = blocked()
+    config_path.write_text(FOREIGN_CONFIG, encoding="utf-8")
+
+    state_out, mocks = _run("update_status", state, installation="package")
+
+    _assert_took_over(state_out, mocks)
+    assert config_path.read_text(encoding="utf-8") != FOREIGN_CONFIG
+
+
+@pytest.mark.parametrize(
+    "blocked", [_legacy_blocked_then_released, _owner_that_lost_then_regained_the_marker]
+)
+def test_unit_taking_over_on_config_changed_rewrites_a_foreign_config(
+    alloy_marker_dir, config_path, blocked
+):
+    state = blocked()
+    config_path.write_text(FOREIGN_CONFIG, encoding="utf-8")
+
+    state_out, mocks = _run("config_changed", state, installation="package")
+
+    mocks["start"].assert_called_once()
+    _assert_took_over(state_out, mocks)
+
+
+def test_takeover_failure_after_the_claim_is_not_reported_as_an_install_failure(alloy_marker_dir):
+    blocked = _blocked_by_other_then_released("package")
+    state_out, mocks = _run(
+        "update_status",
+        blocked,
+        installation="package",
+        side_effects={"start": RuntimeError("alloy did not become active")},
+    )
+
+    assert state_out.unit_status == testing.BlockedStatus(TAKEOVER_FAILED)
+    mocks["install"].assert_not_called()
+
+
+def test_start_hook_takeover_with_an_invalid_config_is_not_active(alloy_marker_dir):
+    blocked = _blocked_by_other_then_released("package")
+
+    state_out, mocks = _run(
+        "start", blocked, installation="package", side_effects={"verify_config": OSError("bad")}
+    )
+
+    mocks["write_config_text"].assert_not_called()
+    assert state_out.unit_status == testing.MaintenanceStatus(
+        "Invalid Alloy config. No changes applied."
+    )
+
+
+def test_stale_ownership_status_is_replaced_by_the_drift_message(alloy_marker_dir, config_path):
+    owner = dataclasses.replace(
+        _owner(),
+        unit_status=testing.BlockedStatus("Alloy ownership check failed: probe failed"),
+    )
+    config_path.write_text("manual: true\n", encoding="utf-8")
+
+    state_out, _ = _run("update_status", owner, installation="package")
+
+    assert state_out.unit_status == testing.MaintenanceStatus(
+        f"Manual Alloy config change detected at {config_path}"
+    )
+
+
+def _run_stubbed(event, state, *, installation):
+    """Run a hook with the gate stubbed as owner, as the pre-existing tests do."""
+    with patch.object(AlloyCharm, "_ensure_alloy_ownership", lambda _self, **_kwargs: True):
+        return _run(event, state, installation=installation)
+
+
+@pytest.mark.parametrize("event_name", ["config_changed", "send-remote-write"])
+def test_established_owner_behaves_exactly_as_without_the_gate(alloy_marker_dir, event_name):
+    owner = _owner()
+    changed = dataclasses.replace(
+        owner, config={"custom_args": "--server.http.listen-addr=0.0.0.0:7000"}
+    )
+
+    expected, expected_mocks = _run_stubbed(event_name, changed, installation="package")
+    actual, mocks = _run(event_name, changed, installation="package")
+
+    assert _call_names(expected_mocks)
+    assert _call_names(mocks) == _call_names(expected_mocks)
+    assert actual.unit_status == expected.unit_status
+    assert alloy_ownership.current_owner() == UNIT
+
+
+def test_install_hook_on_the_owner_path_matches_main(alloy_marker_dir):
+    """Main ran install, then preserve_default_config, and left "Installing Alloy"."""
+    state_out, mocks = _run("install", testing.State(relations=_relations()), installation="none")
+
+    assert _call_names(mocks) == ["install", "preserve_default_config"]
+    assert state_out.unit_status == testing.MaintenanceStatus("Installing Alloy")
+    assert state_out.deferred == []
+
+
+def test_adopt_fails_and_rolls_back_when_the_config_fails_validation(alloy_marker_dir):
+    message, after, mocks = _run_action_failure(
+        _unmanaged_blocked(),
+        installation="package",
+        side_effects={"verify_config": OSError("bad")},
+    )
+
+    assert message.startswith("Adoption failed: Alloy config failed validation")
+    mocks["write_config_text"].assert_not_called()
+    assert _marker_bytes(alloy_marker_dir) is None
+    _assert_next_hook_writes_no_config(after, UNMANAGED)
+
+
+def test_adopt_fails_and_rolls_back_when_alloy_cannot_be_restarted(alloy_marker_dir):
+    failure = subprocess.CalledProcessError(1, ["systemctl", "restart", "alloy"])
+    message, after, _ = _run_action_failure(
+        _unmanaged_blocked(), installation="package", side_effects={"restart": failure}
+    )
+
+    assert message == f"Adoption failed: could not apply the Alloy config: {failure}"
+    assert _marker_bytes(alloy_marker_dir) is None
+    assert _charm_stored(after).get("last_good_config") == ""
+    _assert_next_hook_writes_no_config(after, UNMANAGED)
+
+
+SYSLOG_CONFIG: dict[str, str | int | float | bool] = {"enable-syslogreceivers": True}
+
+
+def _syslog_state(*, leader=False):
+    syslog = testing.Relation("syslog-receiver", interface="syslog", remote_app_name="haproxy")
+    loki = testing.Relation("send-loki-logs", remote_app_name="loki")
+    return testing.State(leader=leader, config=SYSLOG_CONFIG, relations=[syslog, loki]), syslog
+
+
+def _with_loki(monkeypatch):
+    monkeypatch.setattr(
+        AlloyCharm, "_loki_endpoint_urls", lambda *_: ["http://10.0.0.20:3100/loki/api/v1/push"]
+    )
+
+
+def test_non_owner_does_not_advertise_a_syslog_receiver(alloy_marker_dir, monkeypatch):
+    _with_loki(monkeypatch)
+    alloy_ownership.claim("other-sub/3", installed=False)
+    state, syslog = _syslog_state(leader=True)
+
+    state_out, _ = _run("update_status", state, installation="package")
+
+    relation_out = state_out.get_relation(syslog.id)
+    assert relation_out.local_unit_data == {
+        "ready": "false",
+        "reason": "Alloy on this machine is managed by another unit",
+        "recommended-protocol": "tcp",
+    }
+    assert relation_out.local_app_data == relation_out.local_unit_data
+    assert state_out.unit_status == testing.BlockedStatus(OTHER)
+
+
+def test_owner_still_advertises_its_syslog_receiver(alloy_marker_dir, monkeypatch):
+    _with_loki(monkeypatch)
+    alloy_ownership.claim(UNIT, installed=False)
+    state, syslog = _syslog_state()
+
+    state_out, _ = _run("update_status", state, installation="package")
+
+    relation_out = state_out.get_relation(syslog.id)
+    assert relation_out.local_unit_data["ready"] == "true"
+    assert relation_out.local_unit_data["port"] == "1514"
+    assert relation_out.local_unit_data["address"] == "10.0.0.10"
