@@ -143,6 +143,24 @@ parts:
     build-snaps:
       - astral-uv
 
+actions:
+  adopt-alloy:
+    description: |
+      Take ownership of an Alloy that is already installed on this machine from
+      the alloy deb package and is not managed by another unit. The installed
+      version is kept and the existing config is preserved at
+      /etc/alloy/config.alloy.package-default before the charm writes its own
+      config and restarts Alloy.
+    params:
+      force:
+        type: boolean
+        default: false
+        description: |
+          Also take over from the unit recorded as the current owner. Use only
+          when that unit no longer exists; two managers on one Alloy overwrite
+          each other.
+    additionalProperties: false
+
 requires:
   machine-observability:
     interface: machine_observability

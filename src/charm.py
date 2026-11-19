@@ -88,6 +88,19 @@ _OWNERSHIP_STATUS_PREFIXES = (
     "Alloy ownership check failed: ",
     "Installation failed: ",
 )
+# Stored values the adopt-alloy action may change; a failed action puts them back.
+_ADOPTION_STORED_KEYS = (
+    "alloy_installed",
+    "install_pending",
+    "last_good_config",
+    "last_failed_config_path",
+    "config_drifted",
+    "last_custom_args",
+    "last_live_debugging",
+    "last_syslog_receivers_enabled",
+    "livedebug_prev_custom_args",
+    "livedebug_prev_custom_args_set",
+)
 RuleCacheState: TypeAlias = dict[str, dict[str, object]]
 
 
@@ -186,6 +199,7 @@ class AlloyCharm(ops.CharmBase):
             forward_alert_rules=False,
         )
         self.framework.observe(self.on.install, self._on_install)
+        self.framework.observe(self.on.adopt_alloy_action, self._on_adopt_alloy_action)
         self.framework.observe(self.on.start, self._on_start)
         self.framework.observe(self.on.stop, self._on_stop)
         self.framework.observe(self.on.config_changed, self._on_config_changed)
@@ -366,6 +380,80 @@ class AlloyCharm(ops.CharmBase):
             self.unit.status = status
         elif self._is_ownership_status():
             self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
+
+    def _on_adopt_alloy_action(self, event: ops.ActionEvent) -> None:
+        """Hand an unmanaged, deb-package Alloy to this unit.
+
+        A failure after the claim puts the marker and the stored flags back as
+        they were, so a failed action leaves the next hook where it started.
+        """
+        claimed = self._claim_for_adoption(event)
+        if claimed is None:
+            return
+        claim, installation = claimed
+        stored = {key: getattr(self._stored, key) for key in _ADOPTION_STORED_KEYS}
+        try:
+            self._acquire_alloy(installation)
+            alloy.start()
+            self._apply_takeover_config()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alloy adoption failed: %s", exc)
+            event.fail(f"Adoption failed: {exc}{self._undo_adoption(claim, stored)}")
+            return
+        event.set_results(
+            {
+                "owner": self.unit.name,
+                "version": alloy.get_version() or "unknown",
+                "preserved-config": DEFAULT_PACKAGE_CONFIG_BACKUP_PATH,
+            }
+        )
+
+    def _claim_for_adoption(
+        self, event: ops.ActionEvent
+    ) -> tuple[alloy_ownership.Claim, str] | None:
+        """Probe and claim for adopt-alloy; fail the action and return None when refused."""
+        try:
+            installation = alloy.installation()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alloy ownership check failed: %s", exc)
+            event.fail(f"Alloy ownership check failed: {exc}")
+            return None
+        if installation == "other" and not self._stored.install_pending:
+            event.fail(
+                "Alloy on this machine was not installed from the alloy deb package "
+                "and cannot be adopted; uninstall it"
+            )
+            return None
+        force = bool(event.params.get("force", False))
+        try:
+            claim = self._claim_alloy(installation, allow_existing=True, force=force)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alloy ownership check failed: %s", exc)
+            event.fail(f"Alloy ownership check failed: {exc}")
+            return None
+        if claim.state != "owned":
+            event.fail(
+                f"Alloy on this machine is managed by {claim.owner}; "
+                "pass force=true only if that unit no longer exists"
+            )
+            return None
+        return claim, installation
+
+    def _undo_adoption(self, claim: alloy_ownership.Claim, stored: dict[str, object]) -> str:
+        """Put back the stored flags and the marker a failed adoption changed.
+
+        Return a suffix for the failure message when the marker could not be restored.
+        """
+        for key, value in stored.items():
+            setattr(self._stored, key, value)
+        if claim.prior is None:
+            return ""
+        try:
+            alloy_ownership.restore(self.unit.name, claim.prior)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Could not restore the Alloy ownership marker: %s", exc)
+            return f"; the ownership marker could not be restored: {exc}"
+        return ""
 
     def _on_install(self, event):
         self._stored.install_hook_seen = True

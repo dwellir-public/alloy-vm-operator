@@ -7,14 +7,17 @@ import dataclasses
 import json
 import subprocess
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from charms.dwellir_observability.v0.machine_observability import encode_artifact
 from ops import testing
 
 import alloy_ownership
 from charm import AlloyCharm
+from config_builder import DEFAULT_PACKAGE_CONFIG_BACKUP_PATH
 
 pytestmark = pytest.mark.real_ownership
 
@@ -474,3 +477,227 @@ def test_non_owner_stop_leaves_alloy_and_marker_alone(alloy_marker_dir):
 
     mocks["stop"].assert_not_called()
     assert _marker_bytes(alloy_marker_dir) == before
+
+
+def _run_action(state, *, installation, params=None, side_effects=None, install_error=None):
+    """Run the adopt-alloy action with every Alloy call mocked; return (ctx, state_out, mocks)."""
+    ctx = testing.Context(AlloyCharm)
+    with ExitStack() as stack:
+        mocks = _mock_alloy(
+            stack, installation, install_error=install_error, side_effects=side_effects
+        )
+        action = ctx.on.action("adopt-alloy", params={"force": False, **(params or {})})
+        state_out = ctx.run(action, state)
+    return ctx, state_out, mocks
+
+
+def _run_action_failure(
+    state, *, installation, params=None, side_effects=None, install_error=None
+):
+    """Run the action expecting failure; return (message, state after the failure, mocks)."""
+    ctx = testing.Context(AlloyCharm)
+    with ExitStack() as stack:
+        mocks = _mock_alloy(
+            stack, installation, install_error=install_error, side_effects=side_effects
+        )
+        action = ctx.on.action("adopt-alloy", params={"force": False, **(params or {})})
+        with pytest.raises(testing.ActionFailed) as excinfo:
+            ctx.run(action, state)
+    return excinfo.value.message, excinfo.value.state, mocks
+
+
+def _unmanaged_blocked():
+    """Return the state of a unit whose install hook blocked on an unmanaged package Alloy."""
+    blocked, _ = _run("install", testing.State(relations=_relations()), installation="package")
+    assert blocked.unit_status == testing.BlockedStatus(UNMANAGED)
+    return blocked
+
+
+def _assert_next_hook_writes_no_config(state, expected_status):
+    state_out, mocks = _run("update_status", state, installation="package")
+    mocks["write_config_text"].assert_not_called()
+    _assert_untouched(mocks)
+    assert state_out.unit_status == testing.BlockedStatus(expected_status)
+
+
+def test_adopt_claims_unmanaged_package_alloy(alloy_marker_dir):
+    _, state_out, mocks = _run_action(_unmanaged_blocked(), installation="package")
+
+    assert alloy_ownership.current_owner() == UNIT
+    mocks["install"].assert_not_called()
+    names = ("install", "preserve_default_config", "start", "write_config_text")
+    assert _order(mocks, *names) == ["preserve_default_config", "start", "write_config_text"]
+    assert isinstance(state_out.unit_status, testing.ActiveStatus)
+
+
+def test_adopt_reports_owner_version_and_preserved_path(alloy_marker_dir):
+    ctx, _, _ = _run_action(testing.State(relations=_relations()), installation="package")
+
+    assert ctx.action_results == {
+        "owner": UNIT,
+        "version": "1.0.0",
+        "preserved-config": DEFAULT_PACKAGE_CONFIG_BACKUP_PATH,
+    }
+    assert DEFAULT_PACKAGE_CONFIG_BACKUP_PATH == "/etc/alloy/config.alloy.package-default"
+
+
+def test_adopt_refuses_non_package_alloy(alloy_marker_dir):
+    message, _, mocks = _run_action_failure(testing.State(), installation="other")
+
+    assert message == (
+        "Alloy on this machine was not installed from the alloy deb package "
+        "and cannot be adopted; uninstall it"
+    )
+    assert _marker_bytes(alloy_marker_dir) is None
+    _assert_untouched(mocks)
+
+
+def test_adopt_refuses_another_owner_without_force(alloy_marker_dir):
+    alloy_ownership.claim("other-sub/3", installed=False)
+    before = _marker_bytes(alloy_marker_dir)
+    message, _, mocks = _run_action_failure(testing.State(), installation="package")
+
+    assert message == (
+        "Alloy on this machine is managed by other-sub/3; "
+        "pass force=true only if that unit no longer exists"
+    )
+    assert _marker_bytes(alloy_marker_dir) == before
+    _assert_untouched(mocks)
+
+
+def test_adopt_with_force_takes_over_a_stale_owner(alloy_marker_dir):
+    alloy_ownership.claim("other-sub/3", installed=False)
+    _, state_out, mocks = _run_action(
+        testing.State(relations=_relations()), installation="package", params={"force": True}
+    )
+
+    assert alloy_ownership.current_owner() == UNIT
+    mocks["write_config_text"].assert_called_once()
+    assert isinstance(state_out.unit_status, testing.ActiveStatus)
+
+
+def test_adopt_is_idempotent_for_the_owner(alloy_marker_dir):
+    _, owned, _ = _run_action(testing.State(relations=_relations()), installation="package")
+    _, state_out, mocks = _run_action(owned, installation="package")
+
+    assert alloy_ownership.current_owner() == UNIT
+    mocks["install"].assert_not_called()
+    mocks["write_config_text"].assert_not_called()
+    assert isinstance(state_out.unit_status, testing.ActiveStatus)
+
+
+def test_adopt_fails_and_changes_nothing_when_the_probe_times_out(alloy_marker_dir):
+    blocked = _unmanaged_blocked()
+    message, _, mocks = _run_action_failure(
+        blocked, installation=subprocess.TimeoutExpired(["dpkg-query"], 10)
+    )
+
+    assert message.startswith("Alloy ownership check failed: ")
+    assert "timed out" in message
+    assert _marker_bytes(alloy_marker_dir) is None
+    _assert_untouched(mocks)
+
+
+def test_adopt_fails_cleanly_when_the_claim_raises(alloy_marker_dir):
+    with patch("charm.alloy_ownership.claim", side_effect=OSError("read-only")):
+        message, _, mocks = _run_action_failure(testing.State(), installation="package")
+
+    assert message == "Alloy ownership check failed: read-only"
+    _assert_untouched(mocks)
+
+
+def test_failed_adoption_puts_a_missing_marker_back(alloy_marker_dir):
+    message, after, _ = _run_action_failure(
+        _unmanaged_blocked(),
+        installation="package",
+        side_effects={"preserve_default_config": OSError("disk full")},
+    )
+
+    assert message == "Adoption failed: disk full"
+    assert _marker_bytes(alloy_marker_dir) is None
+    _assert_next_hook_writes_no_config(after, UNMANAGED)
+
+
+def test_failed_forced_adoption_puts_the_previous_owner_back(alloy_marker_dir):
+    alloy_ownership.claim("other-sub/3", installed=False)
+    before = _marker_bytes(alloy_marker_dir)
+    message, after, _ = _run_action_failure(
+        _installed_here(),
+        installation="package",
+        params={"force": True},
+        side_effects={"preserve_default_config": OSError("disk full")},
+    )
+
+    assert message == "Adoption failed: disk full"
+    assert _marker_bytes(alloy_marker_dir) == before
+    assert alloy_ownership.current_owner() == "other-sub/3"
+    _assert_next_hook_writes_no_config(after, OTHER)
+
+
+def test_adoption_whose_start_fails_puts_the_marker_and_the_flags_back(alloy_marker_dir):
+    message, after, mocks = _run_action_failure(
+        _unmanaged_blocked(),
+        installation="package",
+        side_effects={"start": RuntimeError("alloy did not become active")},
+    )
+
+    assert message == "Adoption failed: alloy did not become active"
+    mocks["write_config_text"].assert_not_called()
+    assert _marker_bytes(alloy_marker_dir) is None
+    stored = _charm_stored(after)
+    assert stored.get("alloy_installed") is False
+    assert stored.get("install_pending") is False
+    _assert_next_hook_writes_no_config(after, UNMANAGED)
+
+
+def test_adoption_whose_config_write_fails_puts_the_config_flags_back(alloy_marker_dir):
+    message, after, _ = _run_action_failure(
+        _unmanaged_blocked(),
+        installation="package",
+        side_effects={"restart": OSError("systemctl failed")},
+    )
+
+    assert message == "Adoption failed: systemctl failed"
+    assert _marker_bytes(alloy_marker_dir) is None
+    stored = _charm_stored(after)
+    assert stored.get("alloy_installed") is False
+    assert stored.get("last_good_config") == ""
+    assert stored.get("last_custom_args") == ""
+    _assert_next_hook_writes_no_config(after, UNMANAGED)
+
+
+def test_adopt_finishes_an_interrupted_install(alloy_marker_dir):
+    failed, _ = _run("install", _installed_here(), installation="none", install_error=APT_DOWN)
+    # Drop the deferred install so only the action's own install path runs.
+    _, state_out, mocks = _run_action(
+        dataclasses.replace(failed, deferred=[]), installation="other"
+    )
+
+    names = ("install", "preserve_default_config", "start", "write_config_text")
+    assert _order(mocks, *names) == list(names)
+    assert alloy_ownership.current_owner() == UNIT
+    assert isinstance(state_out.unit_status, testing.ActiveStatus)
+
+
+def test_adopt_respects_the_per_dispatch_install_guard(alloy_marker_dir):
+    failed, _ = _run("install", _installed_here(), installation="none", install_error=APT_DOWN)
+
+    # The deferred install replays first and fails again; the action must not retry apt.
+    message, _, mocks = _run_action_failure(failed, installation="package", install_error=APT_DOWN)
+
+    assert _call_names(mocks) == ["install"]
+    assert message == f"Adoption failed: {APT_DOWN}"
+    assert alloy_ownership.current_owner() == UNIT
+
+
+def test_charmcraft_declares_adopt_alloy_with_only_force():
+    metadata = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / "charmcraft.yaml").read_text()
+    )
+    action = metadata["actions"]["adopt-alloy"]
+
+    assert set(action["params"]) == {"force"}
+    assert action["params"]["force"]["type"] == "boolean"
+    assert action["params"]["force"]["default"] is False
+    assert action["additionalProperties"] is False
+    assert DEFAULT_PACKAGE_CONFIG_BACKUP_PATH in action["description"]
