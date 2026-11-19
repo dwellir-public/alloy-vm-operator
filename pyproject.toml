@@ -48,6 +48,7 @@ show_missing = true
 minversion = "6.0"
 log_cli_level = "INFO"
 pythonpath = ["src", "lib"]
+markers = ["real_ownership: run with the real Alloy ownership gate"]
 
 # Linting tools configuration
 [tool.ruff]

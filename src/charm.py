@@ -31,6 +31,7 @@ from pydantic import ValidationError
 from pydantic_core import from_json
 
 import alloy
+import alloy_ownership
 from alert_rules import (
     CosToolRuleValidator,
     build_rule_state,
@@ -79,6 +80,14 @@ _RULE_ARTIFACT_TYPES = {
     "loki_alert_rules": "loki",
 }
 _CACHE_ARTIFACT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+UNMANAGED_ALLOY_MESSAGE = "unmanaged Alloy found; run the adopt-alloy action or uninstall Alloy"
+# Blocked texts the ownership gate sets; an owner clears them once the gate passes.
+_OWNERSHIP_STATUS_PREFIXES = (
+    "Alloy on this machine is managed by ",
+    UNMANAGED_ALLOY_MESSAGE,
+    "Alloy ownership check failed: ",
+    "Installation failed: ",
+)
 RuleCacheState: TypeAlias = dict[str, dict[str, object]]
 
 
@@ -150,7 +159,13 @@ class AlloyCharm(ops.CharmBase):
             last_syslog_receivers_enabled=False,
             livedebug_prev_custom_args="",
             livedebug_prev_custom_args_set=False,
+            install_hook_seen=False,
+            install_pending=False,
+            alloy_installed=False,
         )
+        self._install_failed = False
+        self._install_error: Exception | None = None
+        self._took_over = False
         self._topology = JujuTopology.from_charm(self)
         self._rule_validator = CosToolRuleValidator()
         self._loki_consumer = LokiPushApiConsumer(
@@ -172,6 +187,7 @@ class AlloyCharm(ops.CharmBase):
         )
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.start, self._on_start)
+        self.framework.observe(self.on.stop, self._on_stop)
         self.framework.observe(self.on.config_changed, self._on_config_changed)
         self.framework.observe(self.on.upgrade_charm, self._on_upgrade_charm)
         self.framework.observe(self.on.update_status, self._on_update_status)
@@ -224,20 +240,160 @@ class AlloyCharm(ops.CharmBase):
         self.framework.observe(self.on.leader_elected, self._on_rule_relation_event)
         self.framework.observe(self.on.upgrade_charm, self._on_rule_relation_event)
 
-    def _on_install(self, event):
-        self.unit.status = ops.MaintenanceStatus("Installing Alloy")
+    def _claim_alloy(
+        self, installation: str, *, allow_existing: bool = False, force: bool = False
+    ) -> alloy_ownership.Claim:
+        """Try to claim the machine's Alloy for this unit, given what the probe found."""
+        return alloy_ownership.claim(
+            self.unit.name,
+            installed=installation != "none",
+            allow_existing=allow_existing,
+            force=force,
+        )
+
+    def _ensure_alloy_ownership(self, *, take_over: bool = True) -> bool:
+        """Return whether this unit owns the machine's Alloy, acquiring it on first ownership.
+
+        A unit that does not own Alloy, or cannot tell, is blocked and must not
+        touch the service; failures block the unit instead of failing the hook.
+        A unit that never ran this charm's install hook predates the marker and
+        runs the machine's Alloy, so it may claim an installation it finds.
+        The probe runs once per pass and its answer is passed down.
+        ``take_over`` starts Alloy when a unit installed by this revision first
+        becomes the owner; the install and upgrade hooks leave that to later hooks.
+        """
+        self._install_failed = False
         try:
-            alloy.install()
-            alloy.preserve_default_config(
-                config_path=Path(DEFAULT_CONFIG_PATH),
-                preserved_path=Path(DEFAULT_PACKAGE_CONFIG_BACKUP_PATH),
+            installation = alloy.installation()
+            result = self._claim_alloy(
+                installation, allow_existing=not self._stored.install_hook_seen
             )
-        except subprocess.CalledProcessError as exc:
-            self.unit.status = ops.MaintenanceStatus(f"Installation failed: {exc}")
-            event.defer()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alloy ownership check failed: %s", exc)
+            self.unit.status = ops.BlockedStatus(f"Alloy ownership check failed: {exc}")
+            return False
+        if result.state == "other":
+            self.unit.status = ops.BlockedStatus(
+                f"Alloy on this machine is managed by {result.owner}; "
+                f"remove this unit or {result.owner}"
+            )
+            return False
+        if result.state != "owned":
+            self.unit.status = ops.BlockedStatus(UNMANAGED_ALLOY_MESSAGE)
+            return False
+        return self._ensure_alloy_installed(installation, take_over=take_over)
+
+    def _ensure_alloy_installed(self, installation: str, *, take_over: bool) -> bool:
+        """Acquire Alloy once this unit owns it; block and report False when that fails.
+
+        The marker stays claimed and ``alloy_installed`` stays false, so a later
+        hook retries; within one dispatch the attempt is made only once.
+        """
+        if self._stored.alloy_installed:
+            return True
+        if self._install_error is not None:
+            return self._block_on_install_failure(self._install_error)
+        try:
+            self._acquire_alloy(installation)
+            if take_over and self._stored.install_hook_seen:
+                alloy.start()
+                self._took_over = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alloy installation failed: %s", exc)
+            # A takeover whose start failed is retried whole by a later hook.
+            self._stored.alloy_installed = False
+            self._install_error = exc
+            return self._block_on_install_failure(exc)
+        return True
+
+    def _acquire_alloy(self, installation: str) -> None:
+        """Install Alloy when absent, otherwise keep it and preserve its config.
+
+        Like the gate, the install is attempted only once per dispatch.
+        """
+        if self._install_error is not None:
+            raise self._install_error
+        if self._install_needed(installation):
+            self._install_alloy()
+            return
+        self._preserve_default_config()
+        self._stored.alloy_installed = True
+
+    def _block_on_install_failure(self, exc: Exception) -> bool:
+        """Block the unit on a failed install and report that the gate is closed."""
+        self.unit.status = ops.BlockedStatus(f"Installation failed: {exc}")
+        self._install_failed = True
+        return False
+
+    def _install_needed(self, installation: str) -> bool:
+        """Return whether Alloy is absent or an earlier install by this unit did not finish."""
+        return bool(self._stored.install_pending) or installation == "none"
+
+    def _install_alloy(self) -> None:
+        """Install Alloy and preserve the package-provided config.
+
+        ``install_pending`` stays set until both steps finish, so an interrupted
+        install is repeated even when the probe already detects Alloy.
+        """
+        self._stored.install_pending = True
+        alloy.install()
+        self._preserve_default_config()
+        self._stored.install_pending = False
+        self._stored.alloy_installed = True
+
+    @staticmethod
+    def _preserve_default_config() -> None:
+        alloy.preserve_default_config(
+            config_path=Path(DEFAULT_CONFIG_PATH),
+            preserved_path=Path(DEFAULT_PACKAGE_CONFIG_BACKUP_PATH),
+        )
+
+    def _owns_alloy(self) -> bool:
+        """Return whether the machine's ownership marker names this unit."""
+        return alloy_ownership.current_owner() == self.unit.name
+
+    def _is_ownership_status(self) -> bool:
+        """Return whether the current status is one the ownership gate set."""
+        status = self.unit.status
+        return isinstance(status, ops.BlockedStatus) and status.message.startswith(
+            _OWNERSHIP_STATUS_PREFIXES
+        )
+
+    def _apply_takeover_config(self) -> None:
+        """Write this unit's config after it took over the machine's Alloy in this hook."""
+        status = self._render_and_apply()
+        if status is not None:
+            self.unit.status = status
+        elif self._is_ownership_status():
+            self.unit.status = ops.MaintenanceStatus("Invalid Alloy config. No changes applied.")
+
+    def _on_install(self, event):
+        self._stored.install_hook_seen = True
+        self.unit.status = ops.MaintenanceStatus("Installing Alloy")
+        # The original install is followed by the start hook; a replayed install
+        # retrying a failed one may run after start already did, so it starts Alloy.
+        retrying = bool(self._stored.install_pending)
+        if self._ensure_alloy_ownership(take_over=retrying) or not self._install_failed:
+            return
+        self.unit.status = ops.MaintenanceStatus(f"Installation failed: {self._install_error}")
+        event.defer()
+
+    def _on_stop(self, _event):
+        """Release the machine's Alloy when this unit owns it, leaving Alloy running.
+
+        The next unit on the machine claims the released marker and takes over.
+        """
+        if not self._owns_alloy():
+            return
+        alloy_ownership.release(self.unit.name)
+        logger.info("Released Alloy ownership; Alloy is left running for the next unit.")
 
     def _on_start(self, event):
         try:
+            if not self._ensure_alloy_ownership():
+                self._refresh_remote_write_relation_metadata()
+                self._refresh_syslog_receiver_relations()
+                return
             self.unit.status = ops.MaintenanceStatus("Starting Alloy")
             try:
                 alloy.start()
@@ -251,6 +407,8 @@ class AlloyCharm(ops.CharmBase):
             self._refresh_remote_write_relation_metadata()
             self._refresh_syslog_receiver_relations()
             self.unit.status = ops.ActiveStatus("Alloy is running")
+            if self._took_over:
+                self._apply_takeover_config()
         finally:
             self._reconcile_rule_groups(event)
 
@@ -270,7 +428,11 @@ class AlloyCharm(ops.CharmBase):
             self._reconcile_rule_groups(event)
 
     def _on_upgrade_charm(self, event):
-        """Handle charm upgrade without restarting or rewriting configuration."""
+        """Handle charm upgrade without restarting or rewriting configuration.
+
+        The first hook after a refresh claims the Alloy this unit already runs.
+        """
+        self._ensure_alloy_ownership(take_over=False)
         self._refresh_remote_write_relation_metadata()
         logger.info("Upgrade-charm event: skipping config rewrite and restart.")
 
@@ -315,6 +477,13 @@ class AlloyCharm(ops.CharmBase):
     def _on_update_status(self, event):
         """Handle periodic status updates (detect drift and workload health)."""
         try:
+            if not self._ensure_alloy_ownership():
+                self._refresh_syslog_receiver_relations()
+                return
+            if self._took_over:
+                self._apply_takeover_config()
+                self._refresh_syslog_receiver_relations()
+                return
             if not alloy.is_active():
                 self.unit.status = ops.MaintenanceStatus("Alloy service not running")
                 self._refresh_syslog_receiver_relations()
@@ -330,7 +499,7 @@ class AlloyCharm(ops.CharmBase):
             if connectivity_error is not None:
                 self.unit.status = ops.BlockedStatus(connectivity_error)
                 return
-            if self._is_grafana_cloud_status() or self._is_service_down_status():
+            if self._is_recoverable_status():
                 self.unit.status = self._post_config_status("Alloy is running.")
         finally:
             self._reconcile_rule_groups(event)
@@ -838,6 +1007,16 @@ class AlloyCharm(ops.CharmBase):
         return schema_version, artifacts
 
     def _configure(self) -> ops.StatusBase | None:
+        """Render and apply the Alloy configuration when this unit owns Alloy.
+
+        A unit that does not own the machine's Alloy changes nothing and gets
+        back the ownership status the gate set.
+        """
+        if not self._ensure_alloy_ownership():
+            return self.unit.status
+        return self._render_and_apply()
+
+    def _render_and_apply(self) -> ops.StatusBase | None:
         """Render, validate, and persist the Alloy configuration.
 
         Flow:
@@ -980,6 +1159,14 @@ class AlloyCharm(ops.CharmBase):
         return (
             isinstance(self.unit.status, ops.MaintenanceStatus)
             and self.unit.status.message == "Alloy service not running"
+        )
+
+    def _is_recoverable_status(self) -> bool:
+        """Return whether update-status should replace the current status once healthy."""
+        return (
+            self._is_grafana_cloud_status()
+            or self._is_service_down_status()
+            or self._is_ownership_status()
         )
 
     def _is_grafana_cloud_status(self) -> bool:
