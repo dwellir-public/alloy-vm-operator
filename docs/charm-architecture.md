@@ -111,6 +111,25 @@ endpoints and surfaces connectivity failures as a blocked status. Successful
 probes clear prior Grafana Cloud connectivity errors on the next status
 reconciliation.
 
+## Alloy ownership
+
+Alloy is one machine-wide service, so one unit per machine manages it. The
+owner is recorded in `/var/lib/juju-alloy/owner.json`, the same marker
+`alloy-sub` uses, under a `flock` on `/var/lib/juju-alloy/lock`
+([`src/alloy_ownership.py`](../src/alloy_ownership.py)). `_configure()` claims
+the marker before it delegates to `_render_and_apply()`, the only path that
+writes the Alloy config and `/etc/default/alloy` and reloads or restarts the
+service; the install, start, update-status, and upgrade-charm handlers claim
+it directly. A unit that
+does not own Alloy, or cannot tell because the probe or the claim failed, is
+blocked and changes nothing, but still publishes alert rules and relation
+metadata. Units installed before the marker existed claim the Alloy they run
+on their first hook after a refresh, without a restart; units installed by
+this revision never claim an unmanaged Alloy on their own. The `adopt-alloy`
+action hands an unmanaged deb-package Alloy to a unit, preserving its config,
+and restores the marker if it fails. On `stop` the owner releases the marker
+and leaves Alloy running, and the next unit on the machine takes over.
+
 ## Operational Notes
 
 - Configuration rendering is idempotent and only reapplies when the rendered Alloy config or Alloy
