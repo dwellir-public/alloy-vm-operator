@@ -48,6 +48,7 @@ show_missing = true
 minversion = "6.0"
 log_cli_level = "INFO"
 pythonpath = ["src", "lib"]
+markers = ["real_ownership: run with the real Alloy ownership gate"]
 
 # Linting tools configuration
 [tool.ruff]
@@ -69,10 +70,10 @@ lint.extend-ignore = [
     "D413",
 ]
 extend-exclude = ["__pycache__", "*.egg_info"]
-lint.per-file-ignores = {"src/alert_rules.py" = ["E501"], "tests/*" = ["D100","D101","D102","D103","D104"]}
+lint.per-file-ignores = {"src/alert_rules.py" = ["E501"], "src/alloy_ownership.py" = ["E501"], "tests/*" = ["D100","D101","D102","D103","D104"]}
 
 [tool.ruff.format]
-exclude = ["src/alert_rules.py"]
+exclude = ["src/alert_rules.py", "src/alloy_ownership.py"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10

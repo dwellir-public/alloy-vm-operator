@@ -663,6 +663,81 @@ juju ssh alloy-vm/<unit> 'journalctl -n 20 --no-pager -u snap.lxd.daemon.service
 ```
 
 
+## One Alloy per machine
+
+Alloy is one machine-wide service with one config file, so exactly one unit
+manages it. The owning unit is recorded in `/var/lib/juju-alloy/owner.json`.
+`alloy-sub` uses the same marker, so `alloy-vm` and `alloy-sub` units on one
+machine see each other. A unit that does not own Alloy installs nothing,
+writes no config, and never starts, stops, or restarts the service. It still
+publishes alert rules and relation metadata.
+
+| Status | Meaning | What to do |
+| --- | --- | --- |
+| `Alloy on this machine is managed by <unit>; remove this unit or <unit>` | Another unit, `alloy-vm` or `alloy-sub`, already owns Alloy here. | Remove this unit, or the named unit. The remaining unit takes over within one `update-status` interval. |
+| `unmanaged Alloy found; run the adopt-alloy action or uninstall Alloy` | Alloy is installed but no unit owns it: a manual install, or a unit of an older `alloy-vm` or `alloy-sub` revision that has not been refreshed yet. | If an older-revision unit runs here, refresh it first; do not adopt. Otherwise adopt or uninstall it, below. |
+
+For several workloads on one machine, deploy one `alloy-vm` and relate it to
+every colocated workload over `machine-observability`. Do not add an
+`alloy-sub` to that machine: it blocks, because `alloy-vm` already owns Alloy.
+
+### Adopting a manually installed Alloy
+
+```bash
+juju run alloy-vm/0 adopt-alloy
+```
+
+The unit takes ownership and keeps the installed version. Your existing
+`/etc/alloy/config.alloy` is preserved at
+`/etc/alloy/config.alloy.package-default`. The charm then writes its own
+config and restarts Alloy; anything your old config collected that the charm
+does not render stops being collected. The charm never restores the preserved
+file; it stays there for reference. Only an Alloy installed from the `alloy`
+deb package can be adopted.
+
+To start clean instead, remove the package; the unit installs its own Alloy
+within one `update-status` interval:
+
+```bash
+juju ssh alloy-vm/0 sudo apt-get purge alloy
+```
+
+### An owner that no longer exists
+
+If the owning unit was removed without running its hooks, the marker still
+names it. After checking with `juju status` that the unit is gone:
+
+```bash
+juju run alloy-vm/0 adopt-alloy force=true
+```
+
+Never force while the named unit exists: two managers on one Alloy overwrite
+each other.
+
+### Upgrading
+
+A unit that already runs Alloy claims ownership on its first hook after the
+refresh. Claiming restarts nothing and rewrites no config. A unit of an older
+`alloy-sub` or `alloy-vm` revision on the same machine writes no marker, so
+refresh it first and do not run `adopt-alloy` there. Where two older units
+already share a machine, the first to be refreshed keeps Alloy and the other
+blocks; remove the other one. A unit from an older revision that was stuck
+failing its install when refreshed is treated as newly installed and may need
+`adopt-alloy`.
+
+### Removal
+
+When a unit is removed, its relation-broken hooks first re-render the config
+without the departed relations and reload or restart Alloy. The unit then
+releases ownership and leaves Alloy running on that config. The next unit on
+the machine takes it over without `adopt-alloy`: it writes its own config and then
+makes sure Alloy is running. If no other unit will manage the machine, purge the
+package:
+
+```bash
+juju ssh <machine> sudo apt-get purge alloy
+```
+
 ## Alert rule transport
 
 Alert rules use the receiver's `alert_rules_encodings` advertisement to negotiate
