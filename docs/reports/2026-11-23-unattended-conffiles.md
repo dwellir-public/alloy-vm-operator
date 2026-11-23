@@ -38,3 +38,13 @@ The disposable test model was destroyed. Frej was not changed.
 The local repair remains deployed until the fix is released on Charmhub; no
 claim of stable-channel publication is made. Neither op-node charm was refreshed
 as part of this collector repair.
+
+Post-repair validation over more than 60 seconds: Alloy readiness HTTP 200; fresh
+Mimir up=1 and Loki entries for both op-node/0 and op-reth/1; execution RPC
+reports eth_syncing=false and an advancing head. Exported process start times
+for Alloy, op-node and Reth match the immediate pre-repair baseline. None of
+these processes restarted during the repair.
+
+Version distinction: the package and on-disk executable are 1.22.0, while live
+alloy_build_info reports v1.21.3. Completing package configuration did not restart
+the collector. No restart was added solely to align these versions.
