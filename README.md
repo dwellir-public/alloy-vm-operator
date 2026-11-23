@@ -356,6 +356,46 @@ Notes:
 - Release 1 does not support auth, client certificates, relabeling, or service discovery in manual jobs.
 - If `send-remote-write` is not related, Alloy will not enable the manual job and the unit will wait for remote write.
 
+## Add static labels to everything Alloy sends
+
+Set `static-labels` to attach the same labels to every metric sent to Mimir and
+every log stream sent to Loki, for example a site or environment:
+
+```bash
+juju config alloy-vm static-labels="gateway_region=dc1,environment=production"
+```
+
+The labels are rendered once as `external_labels` on the `prometheus.remote_write`
+component and once on the `loki.write "main"` component. They therefore cover host
+metrics, related and manual metrics jobs, and journal, syslog and machine-observability
+logs alike. A principal charm does not need to publish `gateway_region` itself.
+
+Rules:
+
+- Format is comma-separated `name=value` pairs. Whitespace around names, values and commas is
+  trimmed, empty segments are ignored, and the value is everything after the first `=`.
+- Names match `[A-Za-z_][A-Za-z0-9_]*`, must not start with `juju_` or `__`, and must not be
+  `job` or `instance`. Values must not be empty. A name may appear once.
+- At most 16 labels; names and values are at most 128 characters each.
+- An invalid value blocks the unit with a message naming the entry, and the Alloy config on disk
+  is left as it was.
+- With `config-override` set, `static-labels` has no effect, because the override replaces the
+  generated config entirely.
+- Forwarded alert rules are not rewritten.
+
+If a series or log stream already carries a label of the same name (for example a manual metrics
+job with `labels: {gateway_region: edge}`), the existing label wins and the static label only
+fills in where the name is absent. Alloy's reference does not document this; it follows from the
+Prometheus remote-write queue manager (`processExternalLabels`: "the value in b wins") and
+Alloy's `loki.write` (`externalLabels.Merge(e.Labels)`, entry labels override). Verify on your
+Alloy version if the distinction matters.
+
+To remove the labels again:
+
+```bash
+juju config alloy-vm static-labels=""
+```
+
 ## Reconfigure Alloy with full override
 
 Dump the current override value:

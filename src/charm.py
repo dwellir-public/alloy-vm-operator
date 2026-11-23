@@ -55,6 +55,7 @@ from machine_observability_sources import (
 )
 from manual_metrics_jobs import ManualMetricsJobsError, parse_manual_metrics_jobs
 from outbound_endpoints import OutboundEndpoint, dedupe_endpoints
+from static_labels import StaticLabelsError, parse_static_labels
 
 logger = logging.getLogger(__name__)
 
@@ -1226,14 +1227,17 @@ class AlloyCharm(ops.CharmBase):
         alloy.ensure_config_dir_permissions(str(Path(DEFAULT_CONFIG_PATH).parent))
         try:
             manual_metrics_jobs = self._manual_metrics_scrape_jobs()
-        except ManualMetricsJobsError as exc:
+            external_labels = self._static_labels()
+        except (ManualMetricsJobsError, StaticLabelsError) as exc:
             self.unit.status = ops.BlockedStatus(str(exc))
             self._render_failure = str(exc)
             return None
         contract_error = self._machine_observability_contract_error()
         if contract_error is not None:
             return ops.BlockedStatus(contract_error)
-        config_text = self._render_config_text(manual_metrics_jobs=manual_metrics_jobs)
+        config_text = self._render_config_text(
+            manual_metrics_jobs=manual_metrics_jobs, external_labels=external_labels
+        )
         desired_custom_args = self._desired_custom_args()
         live_debugging = self._live_debugging_enabled()
         syslog_receivers_enabled = self._syslog_receivers_enabled()
@@ -1367,7 +1371,18 @@ class AlloyCharm(ops.CharmBase):
             self.unit.status, ops.BlockedStatus
         ) and self.unit.status.message.startswith("Grafana Cloud ")
 
-    def _render_config_text(self, *, manual_metrics_jobs: list[MetricsScrapeJob]) -> str:
+    def _static_labels(self) -> dict[str, str]:
+        """Parse `static-labels`; ignored while `config-override` replaces the generated config."""
+        if str(self.config.get("config-override", "")).strip():
+            return {}
+        return parse_static_labels(str(self.config.get("static-labels", "")))
+
+    def _render_config_text(
+        self,
+        *,
+        manual_metrics_jobs: list[MetricsScrapeJob],
+        external_labels: dict[str, str],
+    ) -> str:
         override = str(self.config.get("config-override", "")).strip()
         if override:
             return override
@@ -1398,6 +1413,7 @@ class AlloyCharm(ops.CharmBase):
                 }
             ),
             log_source_groups=self._machine_observability_log_source_groups(),
+            external_labels=external_labels,
         )
         return f"{alloy.GENERATED_CONFIG_HEADER}{builder.build()}"
 

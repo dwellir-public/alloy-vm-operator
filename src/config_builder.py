@@ -99,6 +99,7 @@ class ConfigBuilder:
         receiver_ip: str = "",
         topology_labels: dict[str, str],
         log_source_groups: list[LogSourceGroup] | None = None,
+        external_labels: dict[str, str] | None = None,
     ):
         self._loki_endpoints = loki_endpoints
         self._remote_write_endpoints = remote_write_endpoints
@@ -116,6 +117,7 @@ class ConfigBuilder:
         self._receiver_ip = receiver_ip
         self._topology_labels = topology_labels
         self._log_source_groups = log_source_groups or []
+        self._external_labels = external_labels or {}
 
     @staticmethod
     def _normalize_endpoints(
@@ -255,6 +257,7 @@ class ConfigBuilder:
             [
                 f'prometheus.remote_write "{REMOTE_WRITE_COMPONENT_NAME}" {{',
                 endpoint_blocks,
+                *self._render_external_labels(),
                 "",
                 "  wal {",
                 f'    max_keepalive_time = "{REMOTE_WRITE_MAX_KEEPALIVE}"',
@@ -571,9 +574,20 @@ class ConfigBuilder:
                 "",
                 'loki.write "main" {',
                 endpoints,
+                *self._render_external_labels(),
                 "}",
             ]
         )
+
+    def _render_external_labels(self) -> list[str]:
+        """Render the writer-level `external_labels` argument, or nothing when unset."""
+        if not self._external_labels:
+            return []
+        return [
+            "  external_labels = {",
+            *self._render_label_lines(self._external_labels, indent="    "),
+            "  }",
+        ]
 
     def _metrics_forward_to(self) -> str:
         if not self._remote_write_endpoints:

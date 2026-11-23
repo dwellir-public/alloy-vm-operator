@@ -1274,3 +1274,120 @@ def test_manual_metrics_jobs_invalid_config_blocks(monkeypatch):
     assert state_out.unit_status == testing.BlockedStatus(
         "manual metrics job 'external-node-exporter' labels must not override reserved juju labels"
     )
+
+
+def _static_labels_charm(monkeypatch, tmp_path):
+    """Patch a unit with a Loki and a remote-write endpoint; return the config path."""
+    config_path = tmp_path / "config.alloy"
+    monkeypatch.setattr("charm.DEFAULT_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr("charm.alloy.ensure_config_dir_permissions", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.verify_config", lambda **_: None)
+    monkeypatch.setattr("charm.alloy.restart", lambda: None)
+    monkeypatch.setattr("charm.alloy.reload", lambda: None)
+    monkeypatch.setattr("charm.AlloyCharm._write_alloy_systemd_unit_defaults", lambda *_: None)
+    monkeypatch.setattr("charm.alloy.read_custom_args", lambda: DEFAULT_ARGS)
+    monkeypatch.setattr("charm.alloy.write_custom_args", lambda *_: None)
+    monkeypatch.setattr("charm.MetricsEndpointConsumer.jobs", lambda _self: [])
+    monkeypatch.setattr(
+        "charm.PrometheusRemoteWriteConsumer.endpoints",
+        property(lambda _self: [{"url": "http://10.0.0.10:9009/api/v1/push"}]),
+    )
+    monkeypatch.setattr(
+        "charm.AlloyCharm._loki_endpoint_urls",
+        lambda _self: ["http://10.0.0.11:3100/loki/api/v1/push"],
+    )
+
+    def write_config_text(config_text: str, *, config_path, **_):
+        config_path.write_text(config_text, encoding="utf-8")
+
+    monkeypatch.setattr("charm.alloy.write_config_text", write_config_text)
+    return config_path
+
+
+def _static_labels_config(**overrides):
+    return {
+        "config-override": "",
+        "custom_args": DEFAULT_ARGS,
+        "alloy-livedebugging": False,
+        "enable-syslogreceivers": False,
+        "systemd-units": "ssh.service",
+        "log-level": "info",
+        **overrides,
+    }
+
+
+def test_static_labels_config_reaches_the_rendered_config(monkeypatch, tmp_path):
+    config_path = _static_labels_charm(monkeypatch, tmp_path)
+    ctx = testing.Context(AlloyCharm)
+
+    state_out = ctx.run(
+        ctx.on.config_changed(),
+        testing.State(config=_static_labels_config(**{"static-labels": "gateway_region=dc1"})),
+    )
+
+    rendered = config_path.read_text(encoding="utf-8")
+    assert rendered.count('gateway_region = "dc1"') == 2
+    assert isinstance(state_out.unit_status, testing.ActiveStatus)
+
+
+def test_invalid_static_labels_block_and_keep_config(monkeypatch, tmp_path):
+    config_path = _static_labels_charm(monkeypatch, tmp_path)
+    ctx = testing.Context(AlloyCharm)
+    state_out = ctx.run(
+        ctx.on.config_changed(),
+        testing.State(config=_static_labels_config(**{"static-labels": "gateway_region=dc1"})),
+    )
+    before = config_path.read_text(encoding="utf-8")
+
+    state_out = ctx.run(
+        ctx.on.config_changed(),
+        replace(state_out, config=_static_labels_config(**{"static-labels": "gateway-region=x"})),
+    )
+
+    assert isinstance(state_out.unit_status, testing.BlockedStatus)
+    assert "gateway-region" in state_out.unit_status.message
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_manual_job_label_and_static_label_coexist(monkeypatch, tmp_path):
+    config_path = _static_labels_charm(monkeypatch, tmp_path)
+    ctx = testing.Context(AlloyCharm)
+    manual_jobs = """
+- name: external-node-exporter
+  targets:
+    - "10.20.30.40:9100"
+  labels:
+    gateway_region: edge
+"""
+
+    state_out = ctx.run(
+        ctx.on.config_changed(),
+        testing.State(
+            config=_static_labels_config(
+                **{"static-labels": "gateway_region=dc1", "manual-metrics-jobs": manual_jobs}
+            )
+        ),
+    )
+
+    rendered = config_path.read_text(encoding="utf-8")
+    assert 'gateway_region = "edge"' in rendered
+    assert rendered.count('gateway_region = "dc1"') == 2
+    assert isinstance(state_out.unit_status, testing.ActiveStatus)
+
+
+def test_config_override_ignores_static_labels(monkeypatch, tmp_path):
+    config_path = _static_labels_charm(monkeypatch, tmp_path)
+    ctx = testing.Context(AlloyCharm)
+    override = 'logging { level = "warn" }\n'
+
+    state_out = ctx.run(
+        ctx.on.config_changed(),
+        testing.State(
+            config=_static_labels_config(
+                **{"config-override": override, "static-labels": "gateway-region=invalid"}
+            )
+        ),
+    )
+
+    assert config_path.read_text(encoding="utf-8") == override.strip()
+    assert isinstance(state_out.unit_status, testing.ActiveStatus)

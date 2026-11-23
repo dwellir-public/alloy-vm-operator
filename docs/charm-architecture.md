@@ -38,6 +38,12 @@ option. Those jobs are parsed by [`src/manual_metrics_jobs.py`](/home/erik/dwell
 translated into the same `MetricsScrapeJob` model as relation-derived jobs, and merged into the
 rendered Alloy config only when a `send-remote-write` endpoint exists.
 
+The `static-labels` option is parsed by `src/static_labels.py` and passed to `ConfigBuilder` as
+`external_labels`. The builder renders it once on `prometheus.remote_write` and once on
+`loki.write "main"` (when Loki endpoints exist), so every metric and log stream carries the labels
+without per-source duplication. An invalid value blocks the unit before any config is written, and
+`config-override` bypasses the option entirely.
+
 For shared-machine aggregation, principal charms can instead publish
 `machine-observability` payloads. `alloy-vm` requires the v2 or v3 contract with
 `source_topology`, translates their telemetry into the same internal

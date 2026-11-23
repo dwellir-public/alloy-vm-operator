@@ -323,3 +323,86 @@ def test_host_journal_source_drops_without_loki_relation():
         'loki.process "juju" {', 1
     )[0]
     assert "juju_model" not in host_section
+
+
+_LOKI = "http://10.0.0.11:3100/loki/api/v1/push"
+_MIMIR = "http://10.0.0.10:9009/api/v1/push"
+_EXTERNAL_LABELS_BLOCK = (
+    '  external_labels = {\n    environment = "production",\n    gateway_region = "dc1",\n  }'
+)
+
+
+def _component_block(rendered: str, header: str) -> str:
+    return rendered.split(header, 1)[1].split("\n}\n", 1)[0]
+
+
+def test_static_labels_render_on_both_writers():
+    rendered = _builder(
+        loki_endpoints=[_LOKI],
+        remote_write_endpoints=[_MIMIR],
+        systemd_units=["ssh.service"],
+        external_labels={"gateway_region": "dc1", "environment": "production"},
+    ).build()
+
+    assert _EXTERNAL_LABELS_BLOCK in _component_block(
+        rendered, 'prometheus.remote_write "metrics" {'
+    )
+    assert _EXTERNAL_LABELS_BLOCK in _component_block(rendered, 'loki.write "main" {')
+
+
+def test_empty_static_labels_render_nothing():
+    inputs = {
+        "loki_endpoints": [_LOKI],
+        "remote_write_endpoints": [_MIMIR],
+        "systemd_units": ["ssh.service"],
+    }
+
+    omitted = _builder(**inputs).build()
+
+    assert _builder(**inputs, external_labels={}).build() == omitted
+    assert "external_labels" not in omitted
+
+
+def test_static_label_values_are_escaped():
+    rendered = _builder(
+        loki_endpoints=[_LOKI],
+        remote_write_endpoints=[_MIMIR],
+        systemd_units=["ssh.service"],
+        external_labels={"expr": 'a"b\\c'},
+    ).build()
+
+    assert 'expr = "a\\"b\\\\c",' in rendered
+
+
+def test_static_labels_with_a_single_backend():
+    rendered = _builder(
+        remote_write_endpoints=[_MIMIR], external_labels={"gateway_region": "dc1"}
+    ).build()
+
+    assert rendered.count("external_labels") == 1
+    assert "loki.write" not in rendered
+
+
+def test_static_labels_cover_syslog_and_manual_jobs():
+    rendered = _builder(
+        loki_endpoints=[_LOKI],
+        remote_write_endpoints=[_MIMIR],
+        enable_syslog_receivers=True,
+        receiver_hostname="receiver-host",
+        receiver_ip="10.0.0.10",
+        metrics_scrape_jobs=[
+            MetricsScrapeJob(
+                job_name="external-node-exporter",
+                metrics_path="/metrics",
+                scheme="http",
+                targets=[ScrapeTarget(address="10.20.30.40:9100", labels={"env": "prod"})],
+            )
+        ],
+        external_labels={"gateway_region": "dc1"},
+    ).build()
+
+    assert 'loki.source.syslog "receiver" {' in rendered
+    assert 'prometheus.scrape "external_node_exporter" {' in rendered
+    assert rendered.count("external_labels") == 2
+    assert "external_labels" in _component_block(rendered, 'prometheus.remote_write "metrics" {')
+    assert "external_labels" in _component_block(rendered, 'loki.write "main" {')

@@ -115,6 +115,23 @@ config:
         - `labels`
       default: ""
       type: string
+    static-labels:
+      description: |
+        Static labels added to everything this application sends to Mimir and
+        Loki: host metrics, related and manual metrics, and all logs.
+
+        Format: comma-separated `name=value` pairs, for example
+        `gateway_region=dc1,environment=production`. Whitespace around names,
+        values and commas is trimmed; the value is everything after the first
+        `=`. Names must match `[A-Za-z_][A-Za-z0-9_]*`, must not start with
+        `juju_` or `__`, and must not be `job` or `instance`. Values must not
+        be empty. A name may appear once, at most 16 labels are allowed, and
+        names and values are at most 128 characters each.
+
+        An invalid value blocks the unit and leaves the running Alloy config
+        untouched. Has no effect while `config-override` is set.
+      default: ""
+      type: string
     enable-host-alarms:
       description: |
         Publish built-in host disk and memory usage alert rules (80% warning,
