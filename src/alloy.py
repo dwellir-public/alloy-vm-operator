@@ -96,14 +96,17 @@ def _wait_for_active(service: str, *, timeout: int = DEFAULT_START_TIMEOUT) -> N
 def install() -> None:
     """Install the workload using the official Grafana APT repository."""
     _run(["apt-get", "update"])
-    _run(["apt-get", "install", "-y", "wget", "gpg"])
+    # debconf noninteractive mode does not answer dpkg conffile prompts.
+    # Retain charm-managed defaults, including while finishing a pending upgrade.
+    install_args = ["apt-get", "-o", "Dpkg::Options::=--force-confold", "install", "-y"]
+    _run([*install_args, "wget", "gpg"])
     _run(["mkdir", "-p", "/etc/apt/keyrings"])
     _run_shell(
         f"wget -q -O - {GRAFANA_GPG_KEY_URL} | gpg --dearmor > /etc/apt/keyrings/grafana.gpg"
     )
     _run_shell(f'echo "{GRAFANA_APT_SOURCE}" | tee /etc/apt/sources.list.d/grafana.list')
     _run(["apt-get", "update"])
-    _run(["apt-get", "install", "-y", "alloy"])
+    _run([*install_args, "alloy"])
 
 
 def start() -> None:

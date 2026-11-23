@@ -111,3 +111,18 @@ BOMs as artifacts rather than source files.
 Rule compression uses Canonical's public `cosl` API. Rule acceptance, retention
 and size policy belong to this charm; no shared Dwellir transport package or
 cross-repository source synchronization is required.
+
+## Unattended installer recovery validation
+
+The unit suite includes an isolated real-dpkg conffile regression (requires
+`dpkg-deb`). A predeployed recovery artifact in a disposable local model can be
+checked without SSH or `juju exec`:
+
+```bash
+ALLOY_RECOVERY_TEST_MODEL=local:admin/celo-alloy-recovery-test-20261123 \
+  uv run --group dev pytest -q tests/integration/test_unattended_install.py
+```
+
+Set the variable to the actual disposable model name with the required prefix.
+The test changes and restores the collector listener. The caller owns cleanup;
+this test does not create or destroy models.
