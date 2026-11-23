@@ -43,6 +43,12 @@ For shared-machine aggregation, principal charms can instead publish
 `source_topology`, translates their telemetry into the same internal
 `MetricsScrapeJob` shape, and renders them into the shared remote-write path.
 
+Each `metrics_endpoints[]` entry may carry static `labels`. They are applied to the
+series scraped from that endpoint only, never to logs, and the Juju topology labels
+(`juju_model`, `juju_model_uuid`, `juju_application`, `juju_unit`, `juju_charm`)
+take precedence over them. A principal related over both `metrics-endpoint` and
+`machine-observability` is scraped twice.
+
 ## Alert-rule flow
 
 V3 artifacts are compressed, checksummed complete desired state. The consumer

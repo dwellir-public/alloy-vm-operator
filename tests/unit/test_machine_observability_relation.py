@@ -160,6 +160,81 @@ def test_machine_observability_v2_relation_renders_metrics_and_logs():
     assert "/var/log/op-node/debug.log" in rendered
 
 
+def test_machine_observability_endpoint_labels_reach_rendered_scrape_target():
+    seen: dict[str, str] = {}
+    with ExitStack() as stack:
+        for manager in _patch_runtime():
+            stack.enter_context(manager)
+        stack.enter_context(
+            patch(
+                "charm.PrometheusRemoteWriteConsumer.endpoints",
+                new_callable=PropertyMock,
+                return_value=[{"url": "http://mimir:9009/api/v1/push"}],
+            )
+        )
+        stack.enter_context(
+            patch(
+                "charm.LokiPushApiConsumer.loki_endpoints",
+                new_callable=PropertyMock,
+                return_value=[{"url": "http://loki:3100/loki/api/v1/push"}],
+            )
+        )
+        stack.enter_context(
+            patch(
+                "charm.alloy.write_config_text",
+                side_effect=lambda config_text, **_: seen.__setitem__("config", config_text),
+            )
+        )
+        harness = testing.Harness(AlloyCharm)
+        harness.begin()
+
+        relation_id = harness.add_relation("machine-observability", "op-node")
+        harness.add_relation_unit(relation_id, "op-node/0")
+        harness.update_relation_data(
+            relation_id,
+            "op-node",
+            {
+                "payload": json.dumps(
+                    {
+                        "schema_version": 2,
+                        "charm_name": "op-node",
+                        "source_topology": {
+                            "model": "base-mainnet-ovh-us-west-2",
+                            "model_uuid": "00000000-0000-4000-8000-000000000042",
+                            "application": "op-node",
+                            "unit": "op-node/0",
+                            "charm_name": "op-node",
+                        },
+                        "metrics_endpoints": [
+                            {
+                                "targets": ["localhost:7300"],
+                                "path": "/metrics",
+                                "scheme": "http",
+                                "interval": "",
+                                "timeout": "",
+                                "tls": {},
+                                "labels": {"gateway_region": "dc1"},
+                            }
+                        ],
+                        "systemd_units": ["opnode.service"],
+                        "journal_match_expressions": [],
+                        "log_files": [
+                            {
+                                "include": ["/var/log/op-node/*.log"],
+                                "exclude": ["/var/log/op-node/debug.log"],
+                                "attributes": {"service_name": "op-node"},
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+
+    rendered = seen["config"]
+    assert 'gateway_region = "dc1"' in rendered
+    assert 'juju_unit = "op-node/0"' in rendered
+
+
 def test_v2_telemetry_with_both_standard_relations_publishes_empty_rules_and_metadata():
     seen: dict[str, str] = {}
     model_name = "alloy-model"

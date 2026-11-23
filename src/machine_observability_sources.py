@@ -44,7 +44,7 @@ def translate_machine_observability_payload(
             MetricsScrapeJob(
                 job_name=job_name,
                 targets=[
-                    ScrapeTarget(address=target, labels=dict(labels))
+                    ScrapeTarget(address=target, labels={**endpoint.labels, **labels})
                     for target in endpoint.targets
                 ],
                 metrics_path=endpoint.path,
