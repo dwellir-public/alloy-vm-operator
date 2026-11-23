@@ -375,7 +375,7 @@ Rules:
 - Format is comma-separated `name=value` pairs. Whitespace around names, values and commas is
   trimmed, empty segments are ignored, and the value is everything after the first `=`.
 - Names match `[A-Za-z_][A-Za-z0-9_]*`, must not start with `juju_` or `__`, and must not be
-  `job` or `instance`. Values must not be empty. A name may appear once.
+  `job` or `instance`. Values must not be empty and cannot contain a comma. A name may appear once.
 - At most 16 labels; names and values are at most 128 characters each.
 - An invalid value blocks the unit with a message naming the entry, and the Alloy config on disk
   is left as it was.
@@ -389,6 +389,16 @@ fills in where the name is absent. Alloy's reference does not document this; it 
 Prometheus remote-write queue manager (`processExternalLabels`: "the value in b wins") and
 Alloy's `loki.write` (`externalLabels.Merge(e.Labels)`, entry labels override). Verify on your
 Alloy version if the distinction matters.
+
+Static labels count toward the backend's per-series label limit. Loki's default is 15
+label names per stream, and every stream already carries the five `juju_*` topology
+labels plus its source labels, so roughly eight or more static labels can push a stream
+over the limit. Loki then rejects the push and Alloy drops those logs while the charm
+stays active. Mimir's default limit is 30 label names per series.
+
+Setting, changing or clearing the option changes the identity of every series and log
+stream this application sends. Expect a one-time discontinuity: alert `for:` timers
+reset, and the old and new series overlap briefly in queries.
 
 To remove the labels again:
 

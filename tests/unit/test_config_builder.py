@@ -406,3 +406,24 @@ def test_static_labels_cover_syslog_and_manual_jobs():
     assert rendered.count("external_labels") == 2
     assert "external_labels" in _component_block(rendered, 'prometheus.remote_write "metrics" {')
     assert "external_labels" in _component_block(rendered, 'loki.write "main" {')
+
+
+def test_static_label_values_render_non_bmp_characters_literally():
+    rendered = _builder(
+        remote_write_endpoints=[_MIMIR], external_labels={"mood": "happy 😀 å"}
+    ).build()
+
+    assert 'mood = "happy 😀 å",' in rendered
+    assert "\\ud" not in rendered.lower()
+
+
+def test_static_label_keys_true_false_null_render_quoted():
+    rendered = _builder(
+        remote_write_endpoints=[_MIMIR],
+        external_labels={"true": "a", "false": "b", "null": "c", "region": "d"},
+    ).build()
+
+    assert '    "true" = "a",' in rendered
+    assert '    "false" = "b",' in rendered
+    assert '    "null" = "c",' in rendered
+    assert '    region = "d",' in rendered

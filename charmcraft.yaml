@@ -125,8 +125,13 @@ config:
         values and commas is trimmed; the value is everything after the first
         `=`. Names must match `[A-Za-z_][A-Za-z0-9_]*`, must not start with
         `juju_` or `__`, and must not be `job` or `instance`. Values must not
-        be empty. A name may appear once, at most 16 labels are allowed, and
-        names and values are at most 128 characters each.
+        be empty and cannot contain a comma. A name may appear once, at most 16
+        labels are allowed, and names and values are at most 128 characters
+        each.
+
+        Static labels count toward the backend's per-series label limit. Loki's
+        default is 15 label names per stream, including the Juju topology and source
+        labels; exceeding it makes Loki reject the logs without the charm noticing.
 
         An invalid value blocks the unit and leaves the running Alloy config
         untouched. Has no effect while `config-override` is set.

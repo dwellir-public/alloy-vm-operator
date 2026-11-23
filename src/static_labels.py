@@ -13,12 +13,20 @@ _NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_NAMES = frozenset({"job", "instance"})
 
 
+MAX_ECHO_LENGTH = 64
+
+
+def _clip(text: str) -> str:
+    """Bound operator input echoed in an error message."""
+    return text if len(text) <= MAX_ECHO_LENGTH else text[:MAX_ECHO_LENGTH] + "..."
+
+
 class StaticLabelsError(ValueError):
     """Raised when the `static-labels` option is malformed."""
 
 
 def _check_entry(name: str, value: str, entry: str) -> None:
-    prefix = f"static-labels entry '{entry}'"
+    prefix = f"static-labels entry '{_clip(entry)}'"
     if not _NAME_PATTERN.match(name):
         raise StaticLabelsError(f"{prefix}: name must match [A-Za-z_][A-Za-z0-9_]*")
     if name.startswith(("juju_", "__")) or name in _RESERVED_NAMES:
@@ -40,12 +48,13 @@ def parse_static_labels(raw: str) -> dict[str, str]:
             continue
         name, separator, value = entry.partition("=")
         if not separator:
-            raise StaticLabelsError(f"static-labels entry '{entry}': expected name=value")
+            raise StaticLabelsError(f"static-labels entry '{_clip(entry)}': expected name=value")
         name, value = name.strip(), value.strip()
         _check_entry(name, value, entry)
         if name in labels:
             raise StaticLabelsError(
-                f"static-labels entry '{entry}': label '{name}' appears more than once"
+                f"static-labels entry '{_clip(entry)}': "
+                f"label '{_clip(name)}' appears more than once"
             )
         labels[name] = value
     if len(labels) > MAX_STATIC_LABELS:

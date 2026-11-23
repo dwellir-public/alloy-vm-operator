@@ -214,7 +214,7 @@ class ConfigBuilder:
                     [
                         "  rule {",
                         f'    target_label = "{key}"',
-                        f"    replacement  = {json.dumps(value)}",
+                        f"    replacement  = {json.dumps(value, ensure_ascii=False)}",
                         "  }",
                         "",
                     ]
@@ -340,7 +340,9 @@ class ConfigBuilder:
     def _render_target_labels(self, labels: dict[str, str]) -> list[str]:
         lines = []
         for key in sorted(labels):
-            lines.append(f"      {self._render_key(key)} = {json.dumps(labels[key])},")
+            lines.append(
+                f"      {self._render_key(key)} = {json.dumps(labels[key], ensure_ascii=False)},"
+            )
         return lines
 
     def _render_live_debugging(self) -> str:
@@ -558,7 +560,7 @@ class ConfigBuilder:
     def _render_label_lines(self, labels: dict[str, str], *, indent: str) -> list[str]:
         """Render a stable block of Alloy object-label assignments."""
         return [
-            f"{indent}{self._render_key(key)} = {json.dumps(labels[key])},"
+            f"{indent}{self._render_key(key)} = {json.dumps(labels[key], ensure_ascii=False)},"
             for key in sorted(labels)
         ]
 
@@ -755,9 +757,10 @@ class ConfigBuilder:
 
     @staticmethod
     def _render_key(key: str) -> str:
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+        # Alloy tokenises true/false/null as literals, so they cannot be bare object keys.
+        if key not in ("true", "false", "null") and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
             return key
-        return json.dumps(key)
+        return json.dumps(key, ensure_ascii=False)
 
     @staticmethod
     def _format_unit_match(value: str) -> str:
