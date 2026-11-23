@@ -752,3 +752,11 @@ Upgrade Loki/Mimir receivers and gateways before collectors when aggregates exce
 the JSON size limit. Encoded values remain below 60 KiB, with the collector's
 existing stricter publication guard retained. Compression does not change source
 topology, machine-observability schema/artifact encoding, or artifact-count limits.
+
+### Unattended package recovery
+
+The installer retains existing dpkg conffiles during both dependency and Alloy
+package installation. This preserves charm-managed `/etc/default/alloy` settings
+and allows deferred install hooks to finish an upgrade that previously stopped
+at an interactive conffile prompt. Completing a package upgrade may restart Alloy;
+it does not restart the workloads being monitored.
