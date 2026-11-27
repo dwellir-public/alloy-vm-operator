@@ -126,3 +126,21 @@ ALLOY_RECOVERY_TEST_MODEL=local:admin/celo-alloy-recovery-test-20261123 \
 Set the variable to the actual disposable model name with the required prefix.
 The test changes and restores the collector listener. The caller owns cleanup;
 this test does not create or destroy models.
+
+## Diagnostic action integration test
+
+Build the charm for the base being tested, then run from this repository:
+
+```bash
+charmcraft pack --platform=ubuntu@24.04:amd64
+ALLOY_DIAGNOSTICS_CHARM_PATH="$PWD/alloy-vm_ubuntu@24.04-amd64.charm" \
+  ALLOY_DIAGNOSTICS_BASE=ubuntu@24.04 \
+  uv run --group dev pytest -q tests/integration/test_diagnostics.py
+```
+
+The test explicitly uses controller `local`, creates its own disposable model,
+and destroys it on exit. It deploys the built artifact (and an Ubuntu principal
+for alloy-sub), then checks real service/config/journal diagnostics and that
+repeating the action preserves process identity, config digest and ownership.
+It does not use SSH or `juju exec`, and does not prove remote telemetry delivery.
+Without the artifact variable it skips before creating a model.

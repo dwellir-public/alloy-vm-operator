@@ -143,3 +143,12 @@ purge the package with `apt-get purge alloy`.
 - Remote-write gated scraping means metric scrape jobs are only rendered when at least one
   `send-remote-write` endpoint is available, whether those jobs came from relations or manual
   operator config.
+
+## Read-only diagnostics
+
+`get-diagnostics` is wired in `src/charm.py`; `src/diagnostics.py` owns the
+fixed service/config/journal probes. It uses `alloy.verify_config` for syntax
+validation and reads the existing ownership marker without claiming it. It
+does not call reconciliation or change workload/unit state. Probe failures
+remain explicit in the results; local diagnostics do not establish remote
+telemetry delivery. See the README for the result contract and bounds.
