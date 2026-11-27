@@ -2208,6 +2208,17 @@ def test_unit_ip_reads_the_machine_observability_binding(address):
     assert harness.charm._unit_ip() == address
 
 
+def test_own_topology_labels_include_the_unit_ip():
+    harness = testing.Harness(AlloyCharm)
+    harness.add_network("10.0.0.7", endpoint="machine-observability")
+    harness.begin()
+
+    labels = harness.charm._own_topology_labels()
+
+    assert labels["juju_unit_ip"] == "10.0.0.7"
+    assert labels["juju_unit"] == harness.charm.unit.name
+
+
 def test_unit_ip_is_empty_when_juju_reports_no_address(monkeypatch):
     def no_binding(*_args, **_kwargs):
         raise ops.ModelError("no network for machine-observability")

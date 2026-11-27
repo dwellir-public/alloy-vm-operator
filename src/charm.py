@@ -50,6 +50,7 @@ from config_builder import (
 from grafanacloud_connectivity import probe_endpoint
 from host_alert_rules import build_host_alert_rule_groups
 from machine_observability_sources import (
+    UNIT_IP_LABEL,
     MachineObservabilitySource,
     translate_machine_observability_payload,
 )
@@ -1388,15 +1389,7 @@ class AlloyCharm(ops.CharmBase):
             syslog_rate_burst=self._syslog_rate_burst(),
             receiver_hostname=self._syslog_receiver_hostname(),
             receiver_ip=self._syslog_receiver_ip(),
-            topology_labels=self._topology.as_dict(
-                remapped_keys={
-                    "model": "juju_model",
-                    "model_uuid": "juju_model_uuid",
-                    "application": "juju_application",
-                    "unit": "juju_unit",
-                    "charm_name": "juju_charm",
-                }
-            ),
+            topology_labels=self._own_topology_labels(),
             log_source_groups=self._machine_observability_log_source_groups(),
         )
         return f"{alloy.GENERATED_CONFIG_HEADER}{builder.build()}"
@@ -1655,15 +1648,7 @@ class AlloyCharm(ops.CharmBase):
             return []
         return parse_manual_metrics_jobs(
             str(self.config.get("manual-metrics-jobs", "")),
-            topology_labels=self._topology.as_dict(
-                remapped_keys={
-                    "model": "juju_model",
-                    "model_uuid": "juju_model_uuid",
-                    "application": "juju_application",
-                    "unit": "juju_unit",
-                    "charm_name": "juju_charm",
-                }
-            ),
+            topology_labels=self._own_topology_labels(),
         )
 
     def _translated_metrics_scrape_jobs(self) -> list[MetricsScrapeJob]:
@@ -1970,6 +1955,22 @@ class AlloyCharm(ops.CharmBase):
             payload = self._machine_observability_telemetry_payload(relation)
             sources.append(translate_machine_observability_payload(payload, unit_ip))
         return sources
+
+    def _own_topology_labels(self) -> dict[str, str]:
+        """Return this unit's Juju labels, with its address, for its own signals."""
+        labels = self._topology.as_dict(
+            remapped_keys={
+                "model": "juju_model",
+                "model_uuid": "juju_model_uuid",
+                "application": "juju_application",
+                "unit": "juju_unit",
+                "charm_name": "juju_charm",
+            }
+        )
+        unit_ip = self._unit_ip()
+        if unit_ip:
+            labels[UNIT_IP_LABEL] = unit_ip
+        return labels
 
     def _unit_ip(self) -> str:
         """Return this unit's address on the machine-observability binding, or "" if none."""

@@ -767,4 +767,5 @@ class ConfigBuilder:
             "juju_application",
             "juju_unit",
             "juju_charm",
+            "juju_unit_ip",
         ]
