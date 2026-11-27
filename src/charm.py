@@ -1958,9 +1958,7 @@ class AlloyCharm(ops.CharmBase):
     def _machine_observability_sources(self) -> list[MachineObservabilitySource]:
         """Return translated machine-observability sources from related principals."""
         sources: list[MachineObservabilitySource] = []
-        relations = self.model.relations.get("machine-observability", [])
-        internal_ip = self._internal_ip() if relations else ""
-        for relation in relations:
+        for relation in self.model.relations.get("machine-observability", []):
             remote_app = relation.app
             if remote_app is None:
                 continue
@@ -1968,20 +1966,8 @@ class AlloyCharm(ops.CharmBase):
             if not raw_payload:
                 continue
             payload = self._machine_observability_telemetry_payload(relation)
-            sources.append(translate_machine_observability_payload(payload, internal_ip))
+            sources.append(translate_machine_observability_payload(payload))
         return sources
-
-    def _internal_ip(self) -> str:
-        """Return this unit's address on the machine-observability binding, or "" if none."""
-        try:
-            binding = self.model.get_binding("machine-observability")
-            if binding is None:
-                return ""
-            network = binding.network
-        except (ops.ModelError, KeyError):
-            return ""
-        address = network.bind_address or next(iter(network.ingress_addresses), None)
-        return str(address) if address else ""
 
     def _machine_observability_metrics_scrape_jobs(self) -> list[MetricsScrapeJob]:
         """Return translated metrics scrape jobs from machine-observability relations."""
