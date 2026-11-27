@@ -108,26 +108,26 @@ def test_endpoint_label_values_are_escaped_in_rendered_config():
     assert 'gateway_region = "a\\"b\\\\c"' in builder.build()
 
 
-def test_internal_ip_labels_metrics_targets_only():
+def test_unit_ip_labels_metrics_targets_only():
     source = translate_machine_observability_payload(
         _payload({"targets": ["localhost:9092"]}), "10.0.0.7"
     )
 
-    assert source.metrics_scrape_jobs[0].targets[0].labels["internal_ip"] == "10.0.0.7"
+    assert source.metrics_scrape_jobs[0].targets[0].labels["unit_ip"] == "10.0.0.7"
     assert source.log_source_group is not None
-    assert "internal_ip" not in source.log_source_group.topology_labels
+    assert "unit_ip" not in source.log_source_group.topology_labels
 
 
-def test_workload_internal_ip_label_wins_over_the_collector():
+def test_workload_unit_ip_label_wins_over_the_collector():
     source = translate_machine_observability_payload(
-        _payload({"targets": ["localhost:9092"], "labels": {"internal_ip": "10.9.9.9"}}),
+        _payload({"targets": ["localhost:9092"], "labels": {"unit_ip": "10.9.9.9"}}),
         "10.0.0.7",
     )
 
-    assert source.metrics_scrape_jobs[0].targets[0].labels["internal_ip"] == "10.9.9.9"
+    assert source.metrics_scrape_jobs[0].targets[0].labels["unit_ip"] == "10.9.9.9"
 
 
-def test_no_internal_ip_label_without_an_address():
+def test_no_unit_ip_label_without_an_address():
     source = translate_machine_observability_payload(_payload({"targets": ["localhost:9092"]}))
 
-    assert "internal_ip" not in source.metrics_scrape_jobs[0].targets[0].labels
+    assert "unit_ip" not in source.metrics_scrape_jobs[0].targets[0].labels
