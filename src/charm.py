@@ -32,6 +32,7 @@ from pydantic_core import from_json
 
 import alloy
 import alloy_ownership
+import diagnostics
 from alert_rules import (
     CosToolRuleValidator,
     build_rule_state,
@@ -206,6 +207,7 @@ class AlloyCharm(ops.CharmBase):
             peer_relation_name="alloy-peers",
             forward_alert_rules=False,
         )
+        self.framework.observe(self.on.get_diagnostics_action, self._on_get_diagnostics_action)
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.adopt_alloy_action, self._on_adopt_alloy_action)
         self.framework.observe(self.on.start, self._on_start)
@@ -470,6 +472,26 @@ class AlloyCharm(ops.CharmBase):
         return isinstance(status, ops.BlockedStatus) and status.message.startswith(
             _OWNERSHIP_STATUS_PREFIXES
         )
+
+    def _on_get_diagnostics_action(self, event: ops.ActionEvent) -> None:
+        """Report machine diagnostics without invoking lifecycle reconciliation."""
+        try:
+            results = diagnostics.collect(
+                lookback_minutes=event.params.get("lookback-minutes", 10),
+                log_lines=event.params.get("log-lines", 50),
+            )
+        except ValueError as exc:
+            event.fail(str(exc))
+            return
+        results["unit-status"] = self.unit.status.name
+        try:
+            owner = alloy_ownership.current_owner()
+            results["owner"] = owner or "unclaimed"
+            results["owned-by-unit"] = owner == self.unit.name
+        except OSError:
+            results["owner"] = "unknown"
+            results["owned-by-unit"] = False
+        event.set_results(results)
 
     def _on_adopt_alloy_action(self, event: ops.ActionEvent) -> None:
         """Hand an unmanaged, deb-package Alloy to this unit.
