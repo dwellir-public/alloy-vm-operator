@@ -47,6 +47,8 @@ to the series scraped from that endpoint only (not to logs), and the Juju
 topology labels take precedence over them. A principal related over both
 `metrics-endpoint` and `machine-observability` is scraped twice.
 
+Each `machine-observability` target also gets `internal_ip`, this unit's address.
+
 If a related provider still publishes v1 payloads without `source_topology`,
 `alloy-vm` blocks with a message like:
 
