@@ -233,7 +233,7 @@ def test_machine_observability_endpoint_labels_reach_rendered_scrape_target():
 
     rendered = seen["config"]
     assert 'gateway_region = "dc1"' in rendered
-    assert 'unit_ip = "10.0.0.7"' in rendered
+    assert 'juju_unit_ip = "10.0.0.7"' in rendered
     assert 'juju_unit = "op-node/0"' in rendered
 
 

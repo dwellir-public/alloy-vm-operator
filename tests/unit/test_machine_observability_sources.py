@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
 
@@ -113,21 +115,17 @@ def test_unit_ip_labels_metrics_targets_only():
         _payload({"targets": ["localhost:9092"]}), "10.0.0.7"
     )
 
-    assert source.metrics_scrape_jobs[0].targets[0].labels["unit_ip"] == "10.0.0.7"
+    assert source.metrics_scrape_jobs[0].targets[0].labels["juju_unit_ip"] == "10.0.0.7"
     assert source.log_source_group is not None
-    assert "unit_ip" not in source.log_source_group.topology_labels
+    assert "juju_unit_ip" not in source.log_source_group.topology_labels
 
 
-def test_workload_unit_ip_label_wins_over_the_collector():
-    source = translate_machine_observability_payload(
-        _payload({"targets": ["localhost:9092"], "labels": {"unit_ip": "10.9.9.9"}}),
-        "10.0.0.7",
-    )
-
-    assert source.metrics_scrape_jobs[0].targets[0].labels["unit_ip"] == "10.9.9.9"
+def test_a_workload_cannot_send_the_unit_ip_label():
+    with pytest.raises(ValueError, match="reserved"):
+        _payload({"targets": ["localhost:9092"], "labels": {"juju_unit_ip": "10.9.9.9"}})
 
 
 def test_no_unit_ip_label_without_an_address():
     source = translate_machine_observability_payload(_payload({"targets": ["localhost:9092"]}))
 
-    assert "unit_ip" not in source.metrics_scrape_jobs[0].targets[0].labels
+    assert "juju_unit_ip" not in source.metrics_scrape_jobs[0].targets[0].labels
