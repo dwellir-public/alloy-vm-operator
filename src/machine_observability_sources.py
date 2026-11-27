@@ -26,8 +26,8 @@ def translate_machine_observability_payload(
 ) -> MachineObservabilitySource:
     """Translate one v2 payload into builder-ready metrics and log inputs.
 
-    unit_ip is this machine's address. It is added to the Juju labels on
-    metrics targets and logs, and wins over a payload label of the same name.
+    unit_ip is this machine's address. It labels metrics targets only, and
+    it always wins over a payload label of the same name.
     """
     if payload.source_topology is None:
         msg = "machine-observability payload requires source_topology"
@@ -43,9 +43,9 @@ def translate_machine_observability_payload(
     }
     if charm_name:
         labels["juju_charm"] = charm_name
+
     # A payload is application data, so only the collector can say which machine a target is on.
-    if unit_ip:
-        labels[UNIT_IP_LABEL] = unit_ip
+    collector_labels = {**({UNIT_IP_LABEL: unit_ip} if unit_ip else {}), **labels}
 
     metrics_scrape_jobs: list[MetricsScrapeJob] = []
     job_base_name = _topology_component_name(topology.application, topology.unit)
@@ -55,7 +55,10 @@ def translate_machine_observability_payload(
             MetricsScrapeJob(
                 job_name=job_name,
                 targets=[
-                    ScrapeTarget(address=target, labels={**endpoint.labels, **labels})
+                    ScrapeTarget(
+                        address=target,
+                        labels={**endpoint.labels, **collector_labels},
+                    )
                     for target in endpoint.targets
                 ],
                 metrics_path=endpoint.path,

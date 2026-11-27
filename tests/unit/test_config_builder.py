@@ -52,17 +52,6 @@ def test_local_metrics_drop_without_remote_write():
     assert 'prometheus.remote_write "metrics" {' not in rendered
 
 
-def test_local_metrics_carry_the_unit_ip_label_when_present():
-    rendered = _builder(topology_labels={**TOPOLOGY, "juju_unit_ip": "10.0.0.7"}).build()
-
-    relabel = rendered.split('discovery.relabel "local_metrics" {', 1)[1].split(
-        "prometheus.scrape", 1
-    )[0]
-    assert 'target_label = "juju_unit_ip"' in relabel
-    assert 'replacement  = "10.0.0.7"' in relabel
-    assert "juju_unit_ip" not in _builder().build()
-
-
 def test_local_metrics_scrape_every_sixty_seconds_regardless_of_alloy_default():
     """Host metrics are pinned explicitly so a change in Alloy's default cannot alter them."""
     rendered = _builder().build()

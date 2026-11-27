@@ -110,14 +110,14 @@ def test_endpoint_label_values_are_escaped_in_rendered_config():
     assert 'gateway_region = "a\\"b\\\\c"' in builder.build()
 
 
-def test_unit_ip_labels_metrics_targets_and_logs():
+def test_unit_ip_labels_metrics_targets_only():
     source = translate_machine_observability_payload(
         _payload({"targets": ["localhost:9092"]}), "10.0.0.7"
     )
 
     assert source.metrics_scrape_jobs[0].targets[0].labels["juju_unit_ip"] == "10.0.0.7"
     assert source.log_source_group is not None
-    assert source.log_source_group.topology_labels["juju_unit_ip"] == "10.0.0.7"
+    assert "juju_unit_ip" not in source.log_source_group.topology_labels
 
 
 def test_a_workload_cannot_send_the_unit_ip_label():
@@ -129,5 +129,3 @@ def test_no_unit_ip_label_without_an_address():
     source = translate_machine_observability_payload(_payload({"targets": ["localhost:9092"]}))
 
     assert "juju_unit_ip" not in source.metrics_scrape_jobs[0].targets[0].labels
-    assert source.log_source_group is not None
-    assert "juju_unit_ip" not in source.log_source_group.topology_labels
