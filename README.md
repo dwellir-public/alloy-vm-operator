@@ -42,6 +42,11 @@ subordinate attachment from which to derive a fallback. In addition, non-empty
 v3 rule sets require valid `source_topology.model_uuid` and
 `source_topology.application` for stable ownership.
 
+Each `metrics_endpoints[]` entry may declare static `labels`. They are applied
+to the series scraped from that endpoint only (not to logs), and the Juju
+topology labels take precedence over them. A principal related over both
+`metrics-endpoint` and `machine-observability` is scraped twice.
+
 If a related provider still publishes v1 payloads without `source_topology`,
 `alloy-vm` blocks with a message like:
 

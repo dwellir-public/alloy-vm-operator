@@ -323,3 +323,38 @@ def test_host_journal_source_drops_without_loki_relation():
         'loki.process "juju" {', 1
     )[0]
     assert "juju_model" not in host_section
+
+
+def _scrape_target_config(labels):
+    return _builder(
+        remote_write_endpoints=["http://10.0.0.10:9009/api/v1/push"],
+        metrics_scrape_jobs=[
+            MetricsScrapeJob(
+                job_name="polkadot",
+                metrics_path="/metrics",
+                targets=[ScrapeTarget(address="10.0.0.20:9100", labels=labels)],
+            )
+        ],
+    ).build()
+
+
+def test_endpoint_label_values_render_non_bmp_characters_literally():
+    rendered = _scrape_target_config({"juju_application": "polkadot", "mood": "happy 😀 å"})
+
+    assert 'mood = "happy 😀 å",' in rendered
+    assert "\\ud" not in rendered.lower()
+
+
+def test_endpoint_label_values_escape_the_byte_order_mark():
+    config = _scrape_target_config({"juju_application": "polkadot", "region": "eu\ufeffnorth"})
+    assert 'region = "eu\\ufeffnorth",' in config
+    assert "\ufeff" not in config
+
+
+def test_endpoint_label_keys_true_false_null_render_quoted():
+    rendered = _scrape_target_config({"true": "a", "false": "b", "null": "c", "region": "d"})
+
+    assert '"true" = "a",' in rendered
+    assert '"false" = "b",' in rendered
+    assert '"null" = "c",' in rendered
+    assert '      region = "d",' in rendered
